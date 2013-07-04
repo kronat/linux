@@ -12,13 +12,13 @@
 
 #define BURST_0 2
 #define LOG2_BURST_0 1
-#define DELTA_0 500 >> 3
-#define BETA    200 >> 3
+#define DELTA_0 (500 >> 3)
+#define BETA    (200 >> 3)
 #define STABILITY_FACTOR 2 /* TODO: Inglese */
 
 #define U32_MAX     ((u32)~0U)
 
-#define jiffies_to_msec(jiffies) (jiffies * 1000 / HZ)
+/*#define jiffies_to_msec(jiffies) (jiffies * 1000 / HZ)*/
 
 /* TODO: Document each values kernel style. */
 
@@ -29,7 +29,7 @@ struct noord {
 	u32 fp_rtt;		/* rtt of first ack of the burst  */
 	u32 fp_timestamp;	/* Timestamp of the first ack of the burst */
 
-	u32 rtt_min;		/* Minimun RTT encountered */
+	u32 rtt_min;		/* Minimum RTT encountered */
 	u32 ack_count;		/* how many ACKs we have received since last burst reset */
 
 	u32 burst_eff;		/* Real length of burst (in case of pkt loss, eff != len) */
@@ -45,7 +45,7 @@ struct noord {
 	u32 loss_snapshot;	/* Snapshot of packet losses taken every STAB_FACT times */
 };
 
-
+#ifdef DEBUG
 static void print_sk_info(const char *fun, struct sock *sk)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
@@ -68,6 +68,7 @@ static void print_write_queue(const char *fun, struct sock *sk)
 		printk("%s seq=%u, ack=%u\n", fun, scb->seq, scb->ack_seq);
 	}
 }
+#endif
 
 /* Initial Parameters (new transmission, or idle time passed (<-- check it),
  * or RTO expired (<-- check it) */
@@ -161,11 +162,10 @@ static inline void flow_ctrl(struct sock *sk)
 		th_burst_len, pkt_loss);
 #endif
 
-	if (th_burst_len < pkt_loss) {
+	if (th_burst_len < pkt_loss)
 		ca->burst_eff = 0;
-	} else {
+	else
 		ca->burst_eff = th_burst_len - pkt_loss;
-	}
 
 	ca->loss_snapshot = actual_loss;
 
@@ -212,7 +212,7 @@ static void update_burst(struct sock *sk)
 	printk("update_burst: burst_count=%u\n", ca->burst_count);
 #endif
 
-	if(ca->burst_count == STABILITY_FACTOR) {
+	if (ca->burst_count == STABILITY_FACTOR) {
 		rate_ctrl(sk);
 		ca->burst_count = 0;
 	}
@@ -222,9 +222,9 @@ static void update_burst(struct sock *sk)
 static void tcp_noord_cong_avoid(struct sock *sk, u32 ack, u32 in_flight)
 {
 	struct noord *ca = inet_csk_ca(sk);
+#ifdef DEBUG
 	struct tcp_sock *tp = tcp_sk(sk);
 
-#ifdef DEBUG
 	printk("cong_avoid: ack=%u, inf=%u\n", ack, in_flight);
 	print_sk_info("cong_avoid:", sk);
 	print_write_queue("cong_avoid:", sk);
@@ -255,7 +255,7 @@ static void tcp_noord_cong_avoid(struct sock *sk, u32 ack, u32 in_flight)
 		ca->take_rtt = true;
 
 		ca->tx_timer_prev = ca->tx_timer;
-		ca->tx_timer = jiffies_to_msec(tcp_time_stamp - ca->fp_timestamp);
+		ca->tx_timer = jiffies_to_msecs(tcp_time_stamp - ca->fp_timestamp);
 #ifdef DEBUG
 		printk("cong_avoid: BURST_DONE. timer=%u\n", ca->tx_timer);
 #endif
@@ -356,7 +356,7 @@ static struct tcp_congestion_ops tcp_noord __read_mostly = {
 	.cwnd_event	= tcp_noord_cwnd_event,
 	.pkts_acked	= tcp_noord_acked,
 	.owner		= THIS_MODULE,
-	.name		= "tcp_noord",
+	.name		= "noord",
 };
 
 static int __init tcp_noord_register(void)

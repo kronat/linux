@@ -675,7 +675,7 @@ config DEFAULT_TCP_CONG
 	default "vegas" if DEFAULT_VEGAS
 	default "westwood" if DEFAULT_WESTWOOD
 	default "veno" if DEFAULT_VENO
-	default "tcp_noord" if DEFAULT_NOORDWIJK
+	default "noord" if DEFAULT_NOORDWIJK
 	default "reno" if DEFAULT_RENO
 	default "dctcp" if DEFAULT_DCTCP
 	default "cubic"
