@@ -568,6 +568,12 @@ config TCP_CONG_VENO
 	loss packets.
 	See <http://ieeexplore.ieee.org/xpl/freeabs_all.jsp?arnumber=1177186> 
 
+config TCP_CONG_NOORDWIJK
+	tristate "TCP Noordwijk"
+	default n
+	---help---
+	Select TCP Noordiwijk.
+
 config TCP_CONG_YEAH
 	tristate "YeAH TCP"
 	select TCP_CONG_VEGAS
@@ -640,6 +646,9 @@ choice
 	config DEFAULT_VENO
 		bool "Veno" if TCP_CONG_VENO=y
 
+	config DEFAULT_NOORDWIJK
+		bool "Noordwijk" if TCP_CONG_NOORDWIJK=y
+
 	config DEFAULT_WESTWOOD
 		bool "Westwood" if TCP_CONG_WESTWOOD=y
 
@@ -666,6 +675,7 @@ config DEFAULT_TCP_CONG
 	default "vegas" if DEFAULT_VEGAS
 	default "westwood" if DEFAULT_WESTWOOD
 	default "veno" if DEFAULT_VENO
+	default "tcp_noord" if DEFAULT_NOORDWIJK
 	default "reno" if DEFAULT_RENO
 	default "dctcp" if DEFAULT_DCTCP
 	default "cubic"
