@@ -777,6 +777,8 @@ static void tcp_update_pacing_rate(struct sock *sk)
 static void tcp_set_rto(struct sock *sk)
 {
 	const struct tcp_sock *tp = tcp_sk(sk);
+	struct inet_connection_sock *icsk = inet_csk(sk);
+
 	/* Old crap is replaced with new one. 8)
 	 *
 	 * More seriously:
@@ -787,7 +789,12 @@ static void tcp_set_rto(struct sock *sk)
 	 *    is invisible. Actually, Linux-2.4 also generates erratic
 	 *    ACKs in some circumstances.
 	 */
-	inet_csk(sk)->icsk_rto = __tcp_set_rto(tp);
+	if (icsk->icsk_ca_ops->set_timeout)
+		icsk->icsk_rto = icsk->icsk_ca_ops->set_timeout(sk);
+	else
+		icsk->icsk_rto = __tcp_set_rto(tp);
+
+	printk("SET RTO %d\n", icsk->icsk_rto << 3);
 
 	/* 2. Fixups made earlier cannot be right.
 	 *    If we do not estimate RTO correctly without them,

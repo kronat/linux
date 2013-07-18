@@ -2190,6 +2190,9 @@ bool tcp_schedule_loss_probe(struct sock *sk)
 	     tcp_send_head(sk))
 		return false;
 
+	if (icsk->icsk_ca_ops->set_timeout)
+		return icsk->icsk_ca_ops->set_timeout(sk);
+
 	/* Probe timeout is at least 1.5*rtt + TCP_DELACK_MAX to account
 	 * for delayed ack when there's one outstanding packet.
 	 */

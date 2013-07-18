@@ -338,6 +338,14 @@ static u32 tcp_noord_ssthresh(struct sock *sk)
 	return tcp_reno_ssthresh(sk);
 }
 
+static u32 tcp_noord_set_timeout(struct sock *sk)
+{
+	struct noord *ca = inet_csk_ca(sk);
+
+	if (ca->tx_timer > 0)
+		return ca->tx_timer;
+	return DELTA_0;
+}
 
 /*
  * Fields of this structure are (from tcp.h):
@@ -371,6 +379,9 @@ static u32 tcp_noord_ssthresh(struct sock *sk)
  *
  * get info for inet_diag (optional)
  *   void (*get_info)(struct sock *sk, u32 ext, struct sk_buff *skb);
+ *
+ * set timeout for a packet (optional)
+ *   void (*set_timeout)(struct sock *sk);
  */
 static struct tcp_congestion_ops tcp_noord __read_mostly = {
 	.init		= tcp_noord_init,
@@ -379,6 +390,7 @@ static struct tcp_congestion_ops tcp_noord __read_mostly = {
 	.set_state	= tcp_noord_state,
 	.cwnd_event	= tcp_noord_cwnd_event,
 	.pkts_acked	= tcp_noord_acked,
+	.set_timeout	= tcp_noord_set_timeout,
 	.owner		= THIS_MODULE,
 	.name		= "noord",
 };
