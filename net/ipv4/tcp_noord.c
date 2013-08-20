@@ -136,6 +136,8 @@ static void tcp_noord_acked(struct sock *sk, u32 pkts_acked, s32 rtt)
 	if (rtt < 0)
 		return;
 
+	ca->ack_count += pkts_acked;
+
 	if (ca->rtt_min > rtt)
 		ca->rtt_min = rtt;
 
@@ -231,8 +233,6 @@ static void tcp_noord_cong_avoid(struct sock *sk, u32 ack, u32 in_flight)
 	print_sk_info("cong_avoid:", sk);
 	print_write_queue("cong_avoid:", sk);
 #endif
-
-	ca->ack_count += 1;
 
 	/* Is the last RTT received the one which interest us ? */
 	if (ca->take_rtt) {
