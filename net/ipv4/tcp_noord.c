@@ -294,7 +294,6 @@ static void tcp_noord_cwnd_event(struct sock *sk, enum tcp_ca_event event)
 #ifdef DEBUG
 			printk("cwnd_event: TX_START\n");
 #endif
-			tcp_noord_init(sk);
 			break;
 
 		default:
