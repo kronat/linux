@@ -10,8 +10,8 @@
 #include <linux/module.h>
 #include <net/tcp.h>
 
-#define BURST_0 2
-#define LOG2_BURST_0 1
+#define BURST_0 20
+#define LOG2_BURST_0 4
 #define DELTA_0 (500000 >> 3)
 #define BETA    200000
 #define STABILITY_FACTOR 2 /* TODO: Inglese */
