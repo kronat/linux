@@ -13,7 +13,7 @@
 #define BURST_0 2
 #define LOG2_BURST_0 1
 #define DELTA_0 (500 >> 3)
-#define BETA    (200 >> 3)
+#define BETA    200000
 #define STABILITY_FACTOR 2 /* TODO: Inglese */
 
 #define U32_MAX     ((u32)~0U)
@@ -137,12 +137,12 @@ static void tcp_noord_acked(struct sock *sk, u32 pkts_acked, s32 rtt)
 		return;
 
 	if (ca->rtt_min > rtt)
-		ca->rtt_min = rtt << 3;
+		ca->rtt_min = rtt;
 
-	ca->last_rtt = rtt << 3;
+	ca->last_rtt = rtt;
 
 #ifdef DEBUG
-	printk("tcp_noord_acked: pkts_acked = %u, rtt = %d, misalvo=%u\n", pkts_acked, rtt << 3, ca->last_rtt);
+	printk("tcp_noord_acked: pkts_acked = %u, rtt = %d, misalvo=%u\n", pkts_acked, rtt, ca->last_rtt);
 	print_sk_info("tcp_noord_acked:", sk);
 #endif
 }
