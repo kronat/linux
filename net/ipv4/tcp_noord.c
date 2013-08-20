@@ -246,7 +246,6 @@ static void tcp_noord_cong_avoid(struct sock *sk, u32 ack, u32 in_flight)
 
 		/* Take this rtt as the first packet of the burst rtt */
 		ca->fp_rtt = ca->last_rtt;
-		ca->fp_timestamp = tcp_time_stamp;
 	}
 
 #ifdef DEBUG
@@ -292,18 +291,33 @@ static void tcp_noord_cong_avoid(struct sock *sk, u32 ack, u32 in_flight)
  */
 static void tcp_noord_cwnd_event(struct sock *sk, enum tcp_ca_event event)
 {
+	struct noord * ca = inet_csk_ca(sk);
 	switch(event) {
 		case CA_EVENT_TX_START:
 #ifdef DEBUG
 			printk("cwnd_event: TX_START\n");
 #endif
+			/*
+			 * If  we  receive  a  TX_START  event, a  packet is
+			 * being  transmitted  while  there  are  no packets
+			 * in  flight.  Therefore,  if  we  see  a  TX_START
+			 * event  while  ca->ack_count == 0,   we  are  sure
+			 * we are  transmitting  the  first  packet  of  the
+			 * burst.  In  fact,  if  we  were transmitting some
+			 * subsequent packet, either:  a) we  would  already
+			 * have received  the  ACKs for the previous packets
+			 * (and hence  ack_count would be != 0), or b) there
+			 * would  be  packets in flight  (and hence we would
+			 * not be receiving a TX_START event).
+			 */
+			if (ca->ack_count == 0)
+				ca->fp_timestamp = tcp_time_stamp;
 			break;
 		case CA_EVENT_CWND_RESTART:
 #ifdef DEBUG
 			printk("cwnd_event: CWND_RESTART\n");
 #endif
-			tcp_sk(sk)->snd_cwnd =
-				((struct noord*)inet_csk_ca(sk))->burst_len;
+			tcp_sk(sk)->snd_cwnd = ca->burst_len;
 			break;
 		default:
 			/* don't care */
