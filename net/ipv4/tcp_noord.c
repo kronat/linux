@@ -252,7 +252,7 @@ static void tcp_noord_cong_avoid(struct sock *sk, u32 ack, u32 in_flight)
 
 	/* TODO: Check if tp->lost_out interfer in some way */
 	/* Check if we exhausted burst */
-	if (ca->ack_count == ca->burst_eff) {
+	if (ca->ack_count >= ca->burst_eff) {
 		ca->ack_count = 0;
 		ca->take_rtt = true;
 
