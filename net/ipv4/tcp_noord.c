@@ -12,7 +12,7 @@
 
 #define BURST_0 2
 #define LOG2_BURST_0 1
-#define DELTA_0 (500 >> 3)
+#define DELTA_0 (500000 >> 3)
 #define BETA    200000
 #define STABILITY_FACTOR 2 /* TODO: Inglese */
 
@@ -194,9 +194,11 @@ static inline void rate_ctrl(struct sock *sk)
 	} else {
 		// Rate Adjustment
 		/* if STAB_FACT == 1, we could have division by 0. Take care of it. */
-		ca->burst_len = ca->burst_len * ca->tx_timer / (ca->tx_timer_prev + rtt_diff);
+		ca->burst_len = ca->burst_len * (ca->tx_timer_prev << 3) /
+				((ca->tx_timer_prev << 3) + rtt_diff);
 #ifdef DEBUG
-		printk("RateAdj: timer_prev=%u, new_burst=%u\n", ca->tx_timer_prev, ca->burst_len);
+		printk("RateAdj: timer_prev=%u, new_burst=%u\n",
+			(ca->tx_timer_prev << 3), ca->burst_len);
 #endif
 	}
 
@@ -255,14 +257,14 @@ static void tcp_noord_cong_avoid(struct sock *sk, u32 ack, u32 in_flight)
 		ca->take_rtt = true;
 
 		ca->tx_timer_prev = ca->tx_timer;
-		ca->tx_timer = jiffies_to_msecs(tcp_time_stamp - ca->fp_timestamp);
+		ca->tx_timer = jiffies_to_usecs(tcp_time_stamp - ca->fp_timestamp);
 #ifdef DEBUG
 		printk("cong_avoid: BURST_DONE. timer=%u\n", ca->tx_timer);
 #endif
 
 		if (ca->burst_eff == BURST_0) {
 			// ts of last ack - ts of first ack / BURST_0
-			ca->delta = ca->tx_timer >> LOG2_BURST_0;
+			ca->delta = (ca->tx_timer << 3) >> LOG2_BURST_0;
 #ifdef DEBUG
 			printk("cong_avoid: ca->delta=%u\n", ca->delta);
 #endif
