@@ -143,6 +143,9 @@ static void tcp_noord_acked(struct sock *sk, u32 pkts_acked, s32 rtt)
 
 	ca->last_rtt = rtt;
 
+	/* Make sure cwnd size is fixed across the burst */
+	tcp_sk(sk)->snd_cwnd = ca->burst_len;
+
 #ifdef DEBUG
 	printk("tcp_noord_acked: pkts_acked = %u, rtt = %d, misalvo=%u\n", pkts_acked, rtt, ca->last_rtt);
 	print_sk_info("tcp_noord_acked:", sk);
@@ -295,7 +298,13 @@ static void tcp_noord_cwnd_event(struct sock *sk, enum tcp_ca_event event)
 			printk("cwnd_event: TX_START\n");
 #endif
 			break;
-
+		case CA_EVENT_CWND_RESTART:
+#ifdef DEBUG
+			printk("cwnd_event: CWND_RESTART\n");
+#endif
+			tcp_sk(sk)->snd_cwnd =
+				((struct noord*)inet_csk_ca(sk))->burst_len;
+			break;
 		default:
 			/* don't care */
 			break;
