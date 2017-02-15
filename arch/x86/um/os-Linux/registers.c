@@ -26,17 +26,7 @@ int save_i387_registers(int pid, unsigned long *fp_regs)
 
 int save_fp_registers(int pid, unsigned long *fp_regs)
 {
-	struct iovec iov;
-
-	if (have_xstate_support) {
-		iov.iov_base = fp_regs;
-		iov.iov_len = sizeof(struct _xstate);
-		if (ptrace(PTRACE_GETREGSET, pid, NT_X86_XSTATE, &iov) < 0)
-			return -errno;
-		return 0;
-	} else {
 		return save_i387_registers(pid, fp_regs);
-	}
 }
 
 int restore_i387_registers(int pid, unsigned long *fp_regs)
@@ -48,17 +38,7 @@ int restore_i387_registers(int pid, unsigned long *fp_regs)
 
 int restore_fp_registers(int pid, unsigned long *fp_regs)
 {
-	struct iovec iov;
-
-	if (have_xstate_support) {
-		iov.iov_base = fp_regs;
-		iov.iov_len = sizeof(struct _xstate);
-		if (ptrace(PTRACE_SETREGSET, pid, NT_X86_XSTATE, &iov) < 0)
-			return -errno;
-		return 0;
-	} else {
 		return restore_i387_registers(pid, fp_regs);
-	}
 }
 
 #ifdef __i386__
