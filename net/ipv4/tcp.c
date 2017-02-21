@@ -975,9 +975,9 @@ new_segment:
 
 		if (forced_push(tp)) {
 			tcp_mark_push(tp, skb);
-			__tcp_push_pending_frames(sk, mss_now, TCP_NAGLE_PUSH);
-		} else if (skb == tcp_send_head(sk))
 			tcp_push_one(sk, mss_now);
+		} else if (skb == tcp_send_head(sk))
+			__tcp_push_pending_frames(sk, mss_now, TCP_NAGLE_PUSH);
 		continue;
 
 wait_for_sndbuf:
@@ -1320,9 +1320,9 @@ new_segment:
 
 		if (forced_push(tp)) {
 			tcp_mark_push(tp, skb);
-			__tcp_push_pending_frames(sk, mss_now, TCP_NAGLE_PUSH);
-		} else if (skb == tcp_send_head(sk))
 			tcp_push_one(sk, mss_now);
+		} else if (skb == tcp_send_head(sk))
+			__tcp_push_pending_frames(sk, mss_now, TCP_NAGLE_PUSH);
 		continue;
 
 wait_for_sndbuf:
