@@ -478,6 +478,13 @@ config TCP_CONG_BIC
 	increase provides TCP friendliness.
 	See http://www.csc.ncsu.edu/faculty/rhee/export/bitcp/
 
+config TCP_CONG_WAVE
+	tristate "Wave TCP"
+	default m
+	---help---
+	TCP Wave module is something new and shiny. It could be bugged,
+	so for now keep it as module and *please* use it with caution.
+
 config TCP_CONG_CUBIC
 	tristate "CUBIC TCP"
 	default y
@@ -676,6 +683,9 @@ choice
 	config DEFAULT_CUBIC
 		bool "Cubic" if TCP_CONG_CUBIC=y
 
+	config DEFAULT_WAVE
+		bool "Wave" if TCP_CONG_WAVE=y
+
 	config DEFAULT_HTCP
 		bool "Htcp" if TCP_CONG_HTCP=y
 
@@ -715,6 +725,7 @@ config DEFAULT_TCP_CONG
 	string
 	default "bic" if DEFAULT_BIC
 	default "cubic" if DEFAULT_CUBIC
+	default "wave" if DEFAULT_WAVE
 	default "htcp" if DEFAULT_HTCP
 	default "hybla" if DEFAULT_HYBLA
 	default "vegas" if DEFAULT_VEGAS
