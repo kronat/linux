@@ -939,6 +939,14 @@ struct tcp_congestion_ops {
 	/* get info for inet_diag (optional) */
 	size_t (*get_info)(struct sock *sk, u32 ext, int *attr,
 			   union tcp_cc_info *info);
+	/* get the expiration time for the send timer (optional) */
+	unsigned long (*get_send_timer_exp_time)(struct sock *sk);
+	/* no data to transmit at the timer expiration (optional) */
+	void (*no_data_to_transmit)(struct sock *sk);
+	/* the send timer is expired (optional) */
+	void (*send_timer_expired)(struct sock *sk);
+	/* the TCP has sent some segments (optional) */
+	void (*segment_sent)(struct sock *sk, u32 sent);
 
 	char 		name[TCP_CA_NAME_MAX];
 	struct module 	*owner;
