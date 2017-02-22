@@ -64,6 +64,7 @@ int sysctl_tcp_slow_start_after_idle __read_mostly = 1;
 
 static bool tcp_write_xmit(struct sock *sk, unsigned int mss_now, int nonagle,
 			   int push_one, gfp_t gfp);
+static void __tcp_push_pending_frames_handler(unsigned long data);
 
 /* Account for new data that has been sent to the network. */
 static void tcp_event_new_data_sent(struct sock *sk, const struct sk_buff *skb)
@@ -1034,6 +1035,18 @@ static int tcp_transmit_skb(struct sock *sk, struct sk_buff *skb, int clone_it,
 	if (skb->len != tcp_header_size) {
 		tcp_event_data_sent(tp, sk);
 		tp->data_segs_out += tcp_skb_pcount(skb);
+	} else {
+		if (timer_pending(&tp->send_timer) == 0 &&
+		    (!(tcb->tcp_flags & TCPHDR_SYN))) {
+			/* Timer is not running, adding a bit of delay
+			 * to allow data to be queued.
+			 */
+			setup_timer(&tp->send_timer,
+				    __tcp_push_pending_frames_handler,
+				    (unsigned long)sk);
+			mod_timer(&tp->send_timer,
+				  jiffies + msecs_to_jiffies(5));
+		}
 	}
 
 	if (after(tcb->end_seq, tp->snd_nxt) || tcb->seq == tcb->end_seq)
