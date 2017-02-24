@@ -2187,6 +2187,7 @@ static bool tcp_write_xmit(struct sock *sk, unsigned int mss_now, int nonagle,
 			   int push_one, gfp_t gfp)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
+	const struct tcp_congestion_ops *ca_ops;
 	struct sk_buff *skb;
 	unsigned int tso_segs, sent_pkts;
 	int cwnd_quota;
@@ -2194,6 +2195,7 @@ static bool tcp_write_xmit(struct sock *sk, unsigned int mss_now, int nonagle,
 	bool is_cwnd_limited = false, is_rwnd_limited = false;
 	u32 max_segs;
 
+	ca_ops = inet_csk(sk)->icsk_ca_ops;
 	sent_pkts = 0;
 
 	if (!push_one) {
@@ -2292,8 +2294,16 @@ repair:
 			tcp_schedule_loss_probe(sk);
 		is_cwnd_limited |= (tcp_packets_in_flight(tp) >= tp->snd_cwnd);
 		tcp_cwnd_validate(sk, is_cwnd_limited);
+
+		/* Duplicated because of tp->prr_out value */
+		if (ca_ops && ca_ops->segment_sent)
+			ca_ops->segment_sent(sk, sent_pkts);
 		return false;
 	}
+
+	if (ca_ops && ca_ops->segment_sent)
+		ca_ops->segment_sent(sk, 0);
+
 	return !tp->packets_out && tcp_send_head(sk);
 }
 
@@ -2433,6 +2443,15 @@ rearm_timer:
 	tcp_rearm_rto(sk);
 }
 
+static void __tcp_push_pending_frames_handler(unsigned long data)
+{
+	struct sock *sk = (struct sock *)data;
+
+	lock_sock(sk);
+	tcp_push_pending_frames(sk);
+	release_sock(sk);
+}
+
 /* Push out any pending frames which were held back due to
  * TCP_CORK or attempt at coalescing tiny packets.
  * The socket must be locked by the caller.
@@ -2440,6 +2459,8 @@ rearm_timer:
 void __tcp_push_pending_frames(struct sock *sk, unsigned int cur_mss,
 			       int nonagle)
 {
+	struct tcp_sock *tp = tcp_sk(sk);
+
 	/* If we are closed, the bytes will have to remain here.
 	 * In time closedown will finish, we empty the write queue and
 	 * all will be happy.
@@ -2447,9 +2468,38 @@ void __tcp_push_pending_frames(struct sock *sk, unsigned int cur_mss,
 	if (unlikely(sk->sk_state == TCP_CLOSE))
 		return;
 
-	if (tcp_write_xmit(sk, cur_mss, nonagle, 0,
-			   sk_gfp_mask(sk, GFP_ATOMIC)))
-		tcp_check_probe_timer(sk);
+	if (timer_pending(&tp->send_timer) == 0) {
+		/* Timer is not running, push data out */
+		int ret;
+		const struct tcp_congestion_ops *ca_ops;
+
+		ca_ops = inet_csk(sk)->icsk_ca_ops;
+
+		if (ca_ops && ca_ops->send_timer_expired)
+			ca_ops->send_timer_expired(sk);
+
+		if (tcp_write_xmit(sk, cur_mss, nonagle, 0, sk_gfp_mask(sk, GFP_ATOMIC)))
+			tcp_check_probe_timer(sk);
+
+		/* And now let's init the timer only if we have data */
+		if (tcp_send_head(sk)) {
+			if (ca_ops && ca_ops->get_send_timer_exp_time) {
+				unsigned long expiration;
+
+				setup_timer(&tp->send_timer,
+					    __tcp_push_pending_frames_handler,
+					    (unsigned long)sk);
+				expiration = ca_ops->get_send_timer_exp_time(sk);
+				ret = mod_timer(&tp->send_timer,
+						jiffies + expiration);
+				BUG_ON(ret != 0);
+			}
+		} else {
+			del_timer(&tp->send_timer);
+			if (ca_ops && ca_ops->no_data_to_transmit)
+				ca_ops->no_data_to_transmit(sk);
+		}
+	}
 }
 
 /* Send _single_ skb sitting at the send head. This function requires

@@ -1351,6 +1351,8 @@ struct sock *tcp_v4_syn_recv_sock(const struct sock *sk, struct sk_buff *skb,
 	if (*own_req)
 		tcp_move_syn(newtp, req);
 
+	init_timer(&newtp->send_timer);
+
 	return newsk;
 
 exit_overflow:

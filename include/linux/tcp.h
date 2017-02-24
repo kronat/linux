@@ -369,6 +369,9 @@ struct tcp_sock {
 	 */
 	struct request_sock *fastopen_rsk;
 	u32	*saved_syn;
+
+/* TCP send timer */
+	struct timer_list send_timer;
 };
 
 enum tsq_enum {
