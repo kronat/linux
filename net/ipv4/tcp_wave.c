@@ -22,13 +22,16 @@
 #include <net/tcp.h>
 #include <linux/module.h>
 #include <linux/delay.h>
+#include <linux/slab.h>
 
 #define WAVE_DEBUG 1
 
 #ifdef WAVE_DEBUG
- #define DBG(msg...) do { printk("WAVE_DEBUG: " msg); } while (0)
+ #define DBG(msg ...) do { printk("WAVE_DEBUG: " msg); } while (0)
 #else
- static inline void DBG(const char *msg, ...) { }
+static inline void DBG(const char *msg, ...)
+{
+}
 #endif
 
 static uint init_burst __read_mostly = 10;
@@ -45,13 +48,33 @@ MODULE_PARM_DESC(init_timer_ms, "initial timer (ms)");
 module_param(beta_ms, uint, 0644);
 MODULE_PARM_DESC(beta_ms, "beta parameter (ms)");
 
+/* List for saving the size of sent burst over time */
+struct wavetcp_burst_hist {
+	u32 size;		/* The burst size */
+	struct list_head list;	/* Kernel list declaration */
+};
+
 /* TCP Wave private struct */
 struct wavetcp {
-	u8 initialized; /* Tell if the driver is initialized (init has been called) */
-	u8 started;	/* Tell if, as sender, the driver is started (after TX_START) */
-	u16 tx_timer;	/* The current transmission timer (ms) */
-	u32 burst;	/* The current burst size (segments) */
-	int delta_segments; /* Represents a delta from the burst size of segments sent */
+	/* Tell if the driver is initialized (init has been called) */
+	u8 initialized;
+	/* Tell if, as sender, the driver is started (after TX_START) */
+	u8 started;
+	/* The current transmission timer (ms) */
+	u16 tx_timer;
+	/* The current burst size (segments) */
+	u32 burst;
+	/* Represents a delta from the burst size of segments sent */
+	int delta_segments;
+	/* The segments acked in the round */
+	u32 pkts_acked;
+
+	/* The memory cache for saving the burst sizes */
+	struct kmem_cache *cache;
+	/* The burst history */
+	struct wavetcp_burst_hist history;
+
+	unsigned long first_ack_time;
 };
 
 /* Reset all the values except ca->initialized to 0. When needed (e.g., after a
@@ -64,7 +87,6 @@ static void wavetcp_reset(struct sock *sk)
 	ca->started = 0;
 	ca->tx_timer = 0;
 	ca->burst = 0;
-	ca->delta_segments = 0;
 }
 
 /* Called to setup Wave for the current socket after it enters the CONNECTED
@@ -87,6 +109,7 @@ static void wavetcp_init(struct sock *sk)
 
 	DBG("%u [wavetcp_init]\n", tcp_time_stamp);
 
+	/* Setting the initial Cwnd to 0 will not call the TX_START event */
 	tp->snd_ssthresh = 0;
 	tp->snd_cwnd = init_burst;
 
@@ -95,12 +118,45 @@ static void wavetcp_init(struct sock *sk)
 	/* Used to avoid to take the SYN-ACK measurements, and for nothing else */
 	ca->initialized = 1;
 
-	ca->delta_segments = init_burst;
+	ca->delta_segments = 0;
+	ca->first_ack_time = 0;
+
+	/* Init the history of bwnd */
+	INIT_LIST_HEAD(&ca->history.list);
+
+	/* Init our cache pool for the bwnd history */
+	ca->cache = KMEM_CACHE(wavetcp_burst_hist, 0);
+	BUG_ON(ca->cache == 0);
 }
 
 static void wavetcp_release(struct sock *sk)
 {
+	struct wavetcp *ca = inet_csk_ca(sk);
+	struct wavetcp_burst_hist *tmp;
+	struct list_head *pos, *q;
+
 	DBG("%u [wavetcp_release]\n", tcp_time_stamp);
+
+	list_for_each_safe(pos, q, &ca->history.list){
+		tmp = list_entry(pos, struct wavetcp_burst_hist, list);
+		list_del(pos);
+		kmem_cache_free(ca->cache, tmp);
+	}
+
+	/* Thanks for the cache, we don't need it anymore */
+	if (ca->cache != 0)
+		kmem_cache_destroy(ca->cache);
+}
+
+static void wavetcp_history(struct wavetcp *ca)
+{
+	struct list_head *pos, *q;
+	struct wavetcp_burst_hist *tmp;
+
+	list_for_each_safe(pos, q, &ca->history.list) {
+		tmp = list_entry(pos, struct wavetcp_burst_hist, list);
+		DBG("STATE: burst %u", tmp->size);
+	}
 }
 
 /* Please explain that we will be forever in congestion avoidance. */
@@ -121,15 +177,14 @@ static void wavetcp_cong_control(struct sock *sk, const struct rate_sample *rs)
 	struct wavetcp *ca = inet_csk_ca(sk);
 
 	DBG("%u [wavetcp_cong_control] prior_delivered %u, delivered %i, interval_us %li, "
-	       "rtt_us %li, losses %i, ack_sack %u, prior_in_flight %u, is_app %i,"
-	       " is_retrans %i\n", tcp_time_stamp, rs->prior_delivered,
-	       rs->delivered, rs->interval_us, rs->rtt_us, rs->losses,
-	       rs->acked_sacked, rs->prior_in_flight, rs->is_app_limited,
-	       rs->is_retrans);
+	    "rtt_us %li, losses %i, ack_sack %u, prior_in_flight %u, is_app %i,"
+	    " is_retrans %i\n", tcp_time_stamp, rs->prior_delivered,
+	    rs->delivered, rs->interval_us, rs->rtt_us, rs->losses,
+	    rs->acked_sacked, rs->prior_in_flight, rs->is_app_limited,
+	    rs->is_retrans);
 
 	if (!ca->initialized)
 		return;
-
 }
 
 static void wavetcp_state(struct sock *sk, u8 new_state)
@@ -160,20 +215,45 @@ static u32 wavetcp_undo_cwnd(struct sock *sk)
 	return init_burst;
 }
 
+/* Add the size of the burst in the history of bursts */
+static void wavetcp_insert_burst(struct wavetcp *ca, u32 burst)
+{
+	struct wavetcp_burst_hist *cur;
+
+	DBG("%u [wavetcp_insert_burst] burst %u\n", tcp_time_stamp, burst);
+
+	/* Take the memory from the pre-allocated pool */
+	cur = (struct wavetcp_burst_hist *)kmem_cache_alloc(ca->cache,
+							    GFP_KERNEL);
+	BUG_ON(!cur);
+
+	cur->size = burst;
+	list_add_tail(&cur->list, &ca->history.list);
+}
+
 static void wavetcp_cwnd_event(struct sock *sk, enum tcp_ca_event event)
 {
 	struct wavetcp *ca = inet_csk_ca(sk);
 
-	BUG_ON(!ca->initialized);
+	if(!ca->initialized)
+		return;
 
 	switch (event) {
 	case CA_EVENT_TX_START:
 		/* first transmit when no packets in flight */
 		DBG("%u [wavetcp_cwnd_event] TX_START, set burst to %u and timer to %u ms\n",
 		    tcp_time_stamp, init_burst, init_timer_ms);
+
+		if (!ca->started)
+			wavetcp_insert_burst(ca, init_burst);
+
 		ca->started = 1;
 		ca->burst = init_burst;
+		ca->delta_segments = init_burst;
 		ca->tx_timer = init_timer_ms;
+
+		wavetcp_history(ca);
+
 		break;
 	case CA_EVENT_CWND_RESTART:
 		/* congestion window restart */
@@ -221,13 +301,16 @@ static void wavetcp_acked(struct sock *sk, const struct ack_sample *sample)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct wavetcp *ca = inet_csk_ca(sk);
+	struct wavetcp_burst_hist *tmp;
+	struct list_head *pos;
 
-	DBG("%u [wavetcp_acked] pkts_acked %u, rtt_us %u, in_flight %u\n",
-	       tcp_time_stamp, sample->pkts_acked, sample->rtt_us,
-	       sample->in_flight);
-
-	if (! ca->initialized)
+	if (!ca->initialized)
 		return;
+
+	DBG("%u [wavetcp_acked] pkts_acked %u, rtt_us %u, in_flight %u "
+	    ", cwnd %u\n",
+	    tcp_time_stamp, sample->pkts_acked, sample->rtt_us,
+	    sample->in_flight, tp->snd_cwnd);
 
 	if (tp->snd_cwnd >= sample->pkts_acked) {
 		/* The objective here is to avoid to create space for sending segments.
@@ -237,6 +320,7 @@ static void wavetcp_acked(struct sock *sk, const struct ack_sample *sample)
 		/* We sent some scattered segments, so the burst segments and
 		 * the ACK we get is not aligned.
 		 */
+		ca->delta_segments += sample->pkts_acked - tp->snd_cwnd;
 		tp->snd_cwnd = 0;
 	}
 
@@ -244,10 +328,26 @@ static void wavetcp_acked(struct sock *sk, const struct ack_sample *sample)
 	    tcp_time_stamp, tp->snd_cwnd, tcp_packets_in_flight(tp),
 	    ca->delta_segments);
 
-	if (ca->delta_segments > 0)
-		BUG_ON(tp->snd_cwnd - (u32)(ca->delta_segments) > tcp_packets_in_flight(tp));
-	else
-		BUG_ON(tp->snd_cwnd + (u32)(ca->delta_segments) > tcp_packets_in_flight(tp));
+	BUG_ON(tp->snd_cwnd - (u32)(ca->delta_segments) > tcp_packets_in_flight(tp));
+
+	if (ca->first_ack_time == 0)
+		ca->first_ack_time = tcp_time_stamp;
+	ca->pkts_acked += sample->pkts_acked;
+
+	pos = ca->history.list.next;
+	tmp = list_entry(pos, struct wavetcp_burst_hist, list);
+	if (ca->pkts_acked >= tmp->size) {
+		/* Do the calculations */
+		DBG("%u [wavetcp_acked] reached the burst size %u\n",
+		    tcp_time_stamp, tmp->size);
+
+		ca->pkts_acked = 0;
+
+		/* Delete the burst from the history */
+		list_del(pos);
+		kmem_cache_free(ca->cache, tmp);
+		wavetcp_history(ca);
+	}
 }
 
 /* The TCP informs us that the timer is expired (or has never been set). We can
@@ -259,6 +359,7 @@ static void wavetcp_timer_expired(struct sock *sk)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct wavetcp *ca = inet_csk_ca(sk);
+	u32 current_burst = ca->burst;
 
 	BUG_ON(!ca->initialized);
 
@@ -269,25 +370,55 @@ static void wavetcp_timer_expired(struct sock *sk)
 		/* In the previous round, we sent more than the allowed burst,
 		 * so reduce the current burst.
 		 */
-		BUG_ON(ca->burst > ca->delta_segments);
-		ca->burst -= ca->delta_segments;
-		ca->delta_segments = 0;
+		BUG_ON(current_burst > ca->delta_segments);
+		current_burst += ca->delta_segments; /* please *reduce* */
+		ca->delta_segments = current_burst;
+
+		/* Right now, we should send "current_burst" segments out */
+
+		if (tcp_packets_in_flight(tp) > tp->snd_cwnd) {
+			/* For some reasons (e.g., tcp loss probe)
+			 * we sent something outside the allowed window.
+			 * Add the amount of segments into the burst, in order
+			 * to effectively send the previous "current_burst"
+			 * segments, but without touching delta_segments.
+			 */
+			u32 diff = tcp_packets_in_flight(tp) - tp->snd_cwnd;
+			current_burst += diff;
+			DBG("%u [wavetcp_timer_expired] adding %u to balance "
+			    "segments sent out of window", tcp_time_stamp,
+			    diff);
+		}
 	} else if (ca->delta_segments > 0) {
 		/* In the previous round, we didn't send the entire burst.
 		 * Probably some adjustment is needed.
 		 */
+		DBG("%u [wavetcp_timer_expired] WARNING !!! Not ALL burst sent out\n",
+		    tcp_time_stamp);
+		BUG_ON(1 == 0);
+	} else {
+		/* No delta segments, in the previous round we were good */
+		ca->delta_segments += current_burst;
 	}
 
-	if (ca->burst < min_burst)
-		ca->burst = min_burst;
+	if (current_burst < min_burst) {
+		DBG("%u [wavetcp_timer_expired] WARNING !! not min_burst",
+		    tcp_time_stamp);
+		ca->delta_segments += min_burst - current_burst;
+		current_burst = min_burst;
+	}
 
-	tp->snd_cwnd += ca->burst;
-	ca->delta_segments += ca->burst;
+	tp->snd_cwnd += current_burst;
 
-	DBG("%u [wavetcp_timer_expired], increased window of %u segments, total %u, delta %i\n",
-	    tcp_time_stamp, ca->burst, tp->snd_cwnd, ca->delta_segments);
+	wavetcp_insert_burst(ca, current_burst);
+	wavetcp_history(ca);
 
-	BUG_ON(tp->snd_cwnd - tcp_packets_in_flight(tp) != ca->burst);
+	DBG("%u [wavetcp_timer_expired], increased window of %u segments, "
+	    "total %u, delta %i, in_flight %u\n",
+	    tcp_time_stamp, ca->burst, tp->snd_cwnd, ca->delta_segments,
+	    tcp_packets_in_flight(tp));
+
+	BUG_ON(tp->snd_cwnd - tcp_packets_in_flight(tp) > current_burst);
 
 }
 
@@ -312,7 +443,7 @@ static void wavetcp_segment_sent(struct sock *sk, u32 sent)
 
 	ca->delta_segments -= sent;
 
-	DBG("%u [wavetcp_segment_sent] sent %u delta %u \n", tcp_time_stamp,
+	DBG("%u [wavetcp_segment_sent] sent %u delta %i \n", tcp_time_stamp,
 	    sent, ca->delta_segments);
 }
 
