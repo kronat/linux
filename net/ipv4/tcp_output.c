@@ -42,6 +42,31 @@
 #include <linux/gfp.h>
 #include <linux/module.h>
 
+#define DEBUG_SEG_OUT 1
+
+#ifdef DEBUG_SEG_OUT
+  #define DBG(msg...) do { printk("SEGO_DEBUG: " msg); } while (0)
+  static const char *header_flags[5] = { "[SYN]", "[SYN|ACK]",
+					"[ACK]", "[FIN|ACK]", "[UNK]" };
+static inline const char *print_tcp_header_flags(__u8 flags)
+{
+	if (flags & TCPHDR_SYN && !(flags & TCPHDR_ACK))
+		return header_flags[0];
+	else if (flags & TCPHDR_SYN && flags & TCPHDR_ACK)
+		return header_flags[1];
+	else if (flags & TCPHDR_FIN)
+		return header_flags[3];
+	else if (flags & TCPHDR_ACK)
+		return header_flags[2];
+	else
+		return header_flags[4];
+}
+
+
+#else
+ static inline void DBG(const char *msg, ...) { }
+#endif
+
 /* People can turn this off for buggy TCP's found in printers etc. */
 int sysctl_tcp_retrans_collapse __read_mostly = 1;
 
@@ -741,6 +766,7 @@ static void tcp_tsq_handler(struct sock *sk)
 		    tp->snd_cwnd > tcp_packets_in_flight(tp))
 			tcp_xmit_retransmit_queue(sk);
 
+		DBG("%u [tcp_tsq_handler]\n", tcp_time_stamp);
 		tcp_write_xmit(sk, tcp_current_mss(sk), tp->nonagle,
 			       0, GFP_ATOMIC);
 	}
@@ -928,6 +954,7 @@ static int tcp_transmit_skb(struct sock *sk, struct sk_buff *skb, int clone_it,
 	struct tcp_md5sig_key *md5;
 	struct tcphdr *th;
 	int err;
+	u8 flags;
 
 	BUG_ON(!skb || !tcp_skb_pcount(skb));
 	tp = tcp_sk(sk);
@@ -987,6 +1014,8 @@ static int tcp_transmit_skb(struct sock *sk, struct sk_buff *skb, int clone_it,
 	th->check		= 0;
 	th->urg_ptr		= 0;
 
+	flags = tcb->tcp_flags;
+
 	/* The urg_mode check is necessary during a below snd_una win probe */
 	if (unlikely(tcp_urg_mode(tp) && before(tcb->seq, tp->snd_up))) {
 		if (before(tp->snd_up, tcb->seq + 0x10000)) {
@@ -1045,6 +1074,10 @@ static int tcp_transmit_skb(struct sock *sk, struct sk_buff *skb, int clone_it,
 			       sizeof(struct inet6_skb_parm)));
 
 	err = icsk->icsk_af_ops->queue_xmit(sk, skb, &inet->cork.fl);
+
+	DBG("%u [tcp_transmit_skb] seq=%u, ack=%u, window=%u, len=%u flags=%s\n",
+	    tcp_time_stamp, ntohl(th->seq), ntohl(th->ack_seq),
+	    ntohs(th->window), skb->len, print_tcp_header_flags(flags));
 
 	if (likely(err <= 0))
 		return err;
@@ -2055,6 +2088,7 @@ static int tcp_mtu_probe(struct sock *sk)
 	/* We're ready to send.  If this fails, the probe will
 	 * be resegmented into mss-sized pieces by tcp_write_xmit().
 	 */
+	DBG("%u [tcp_mtu_probe] sending a probe\n", tcp_time_stamp);
 	if (!tcp_transmit_skb(sk, nskb, 1, GFP_ATOMIC)) {
 		/* Decrement cwnd here because we are sending
 		 * effectively two packets. */
@@ -2370,6 +2404,7 @@ void tcp_send_loss_probe(struct sock *sk)
 	if (skb) {
 		if (tcp_snd_wnd_test(tp, skb, mss)) {
 			pcount = tp->packets_out;
+			DBG("%u [tcp_send_loss_probe]\n", tcp_time_stamp);
 			tcp_write_xmit(sk, mss, TCP_NAGLE_OFF, 2, GFP_ATOMIC);
 			if (tp->packets_out > pcount)
 				goto probe_sent;
@@ -2447,7 +2482,9 @@ void tcp_push_one(struct sock *sk, unsigned int mss_now)
 
 	BUG_ON(!skb || skb->len < mss_now);
 
+	DBG("%u [tcp_push_one] Pushing directly\n", tcp_time_stamp);
 	tcp_write_xmit(sk, mss_now, TCP_NAGLE_PUSH, 1, sk->sk_allocation);
+	DBG("%u [tcp_push_one] End of untimed push\n", tcp_time_stamp);
 }
 
 /* This function returns the amount that we can raise the
@@ -2786,9 +2823,11 @@ int __tcp_retransmit_skb(struct sock *sk, struct sk_buff *skb, int segs)
 
 		skb_mstamp_get(&skb->skb_mstamp);
 		nskb = __pskb_copy(skb, MAX_TCP_HEADER, GFP_ATOMIC);
+		DBG("%u [tcp_retransmit_skb] retransmit\n", tcp_time_stamp);
 		err = nskb ? tcp_transmit_skb(sk, nskb, 0, GFP_ATOMIC) :
 			     -ENOBUFS;
 	} else {
+		DBG("%u [tcp_retransmit_skb] retransmit\n", tcp_time_stamp);
 		err = tcp_transmit_skb(sk, skb, 1, GFP_ATOMIC);
 	}
 
@@ -3057,6 +3096,7 @@ void tcp_send_active_reset(struct sock *sk, gfp_t priority)
 			     TCPHDR_ACK | TCPHDR_RST);
 	skb_mstamp_get(&skb->skb_mstamp);
 	/* Send it off. */
+	DBG("%u [tcp_send_active_reset]\n", tcp_time_stamp);
 	if (tcp_transmit_skb(sk, skb, 0, priority))
 		NET_INC_STATS(sock_net(sk), LINUX_MIB_TCPABORTFAILED);
 
@@ -3095,6 +3135,7 @@ int tcp_send_synack(struct sock *sk)
 		TCP_SKB_CB(skb)->tcp_flags |= TCPHDR_ACK;
 		tcp_ecn_send_synack(sk, skb);
 	}
+	DBG("%u [tcp_send_synack]\n", tcp_time_stamp);
 	return tcp_transmit_skb(sk, skb, 1, GFP_ATOMIC);
 }
 
@@ -3385,6 +3426,7 @@ static int tcp_send_syn_data(struct sock *sk, struct sk_buff *syn)
 	if (syn_data->len)
 		tcp_chrono_start(sk, TCP_CHRONO_BUSY);
 
+	DBG("%u [tcp_send_syn_data]\n", tcp_time_stamp);
 	err = tcp_transmit_skb(sk, syn_data, 1, sk->sk_allocation);
 
 	syn->skb_mstamp = syn_data->skb_mstamp;
@@ -3406,6 +3448,7 @@ fallback:
 	/* Send a regular SYN with Fast Open cookie request option */
 	if (fo->cookie.len > 0)
 		fo->cookie.len = 0;
+	DBG("%u [tcp_send_syn_data] fallback \n", tcp_time_stamp);
 	err = tcp_transmit_skb(sk, syn, 1, sk->sk_allocation);
 	if (err)
 		tp->syn_fastopen = 0;
@@ -3438,6 +3481,7 @@ int tcp_connect(struct sock *sk)
 	tcp_ecn_send_syn(sk, buff);
 
 	/* Send off SYN; include data in Fast Open. */
+	DBG("%u [tcp_connect]\n", tcp_time_stamp);
 	err = tp->fastopen_req ? tcp_send_syn_data(sk, buff) :
 	      tcp_transmit_skb(sk, buff, 1, sk->sk_allocation);
 	if (err == -ECONNREFUSED)
@@ -3553,6 +3597,7 @@ void tcp_send_ack(struct sock *sk)
 
 	/* Send it off, this clears delayed acks for us. */
 	skb_mstamp_get(&buff->skb_mstamp);
+	DBG("%u [tcp_send_ack]\n", tcp_time_stamp);
 	tcp_transmit_skb(sk, buff, 0, (__force gfp_t)0);
 }
 EXPORT_SYMBOL_GPL(tcp_send_ack);
@@ -3588,6 +3633,8 @@ static int tcp_xmit_probe_skb(struct sock *sk, int urgent, int mib)
 	tcp_init_nondata_skb(skb, tp->snd_una - !urgent, TCPHDR_ACK);
 	skb_mstamp_get(&skb->skb_mstamp);
 	NET_INC_STATS(sock_net(sk), mib);
+
+	DBG("%u [tcp_xmit_probe_skb]\n", tcp_time_stamp);
 	return tcp_transmit_skb(sk, skb, 0, (__force gfp_t)0);
 }
 
@@ -3631,6 +3678,7 @@ int tcp_write_wakeup(struct sock *sk, int mib)
 			tcp_set_skb_tso_segs(skb, mss);
 
 		TCP_SKB_CB(skb)->tcp_flags |= TCPHDR_PSH;
+		DBG("%u [tcp_write_wakeup]\n", tcp_time_stamp);
 		err = tcp_transmit_skb(sk, skb, 1, GFP_ATOMIC);
 		if (!err)
 			tcp_event_new_data_sent(sk, skb);
