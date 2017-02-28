@@ -51,44 +51,69 @@ MODULE_PARM_DESC(beta_ms, "beta parameter (ms)");
 /* Shift factor for the exponentially weighted average. */
 #define SHIFT_FACTOR 10
 
+/* Tell if the driver is initialized (init has been called) */
+#define FLAG_INIT	0x1
+/* Tell if, as sender, the driver is started (after TX_START) */
+#define FLAG_START	0x2
+/* If it's true, we save the sent size as a burst */
+#define FLAG_SAVE	0x4
+
 /* List for saving the size of sent burst over time */
 struct wavetcp_burst_hist {
-	u32 size;		/* The burst size */
+	u16 size;		/* The burst size */
 	struct list_head list;	/* Kernel list declaration */
 };
 
+static __always_inline bool test_flag (u8 value, const u8 *flags)
+{
+	return (*flags & value) == value;
+}
+
+static __always_inline void set_flag (u8 value, u8 *flags)
+{
+	*flags |= value;
+}
+
+static __always_inline void clear_flag (u8 value, u8 *flags)
+{
+	*flags &= ~(value);
+}
+
 /* TCP Wave private struct */
 struct wavetcp {
-	/* Tell if the driver is initialized (init has been called) */
-	u8 initialized;
-	/* Tell if, as sender, the driver is started (after TX_START) */
-	u8 started;
-	/* If it's true, we save the sent size as a burst */
-	u8 save_burst;
+	/* The module flags */
+	u8 flags;
 	/* The current transmission timer (ms) */
 	u16 tx_timer;
 	/* The current burst size (segments) */
-	u32 burst;
+	u16 burst;
 	/* Represents a delta from the burst size of segments sent */
-	int delta_segments;
+	char delta_segments;
 	/* The segments acked in the round */
 	u32 pkts_acked;
-
-	u32 rtt_samples_to_ignore;
+	/* The number of samples to ignore at the beginning of the round. Set
+	 * if, for some reason, the TCP send segments out of the timer */
+	u8 rtt_samples_to_ignore;
+	/* Average ack train dispersion */
+	unsigned long avg_ack_train_disp;
 
 	/* First ACK time of the round */
 	unsigned int first_ack_time;
 	/* First RTT of the round */
-	unsigned long first_rtt;
+	u32 first_rtt;
 	/* Minimum RTT of the round */
-	unsigned long min_rtt;
+	u32 min_rtt;
 	/* Average RTT of the previous round */
-	unsigned long avg_rtt;
+	u32 avg_rtt;
+	/* Maximum RTT */
+	u32 max_rtt;
+	/* Stability factor */
+	u8 stab_factor;
 
 	/* The memory cache for saving the burst sizes */
 	struct kmem_cache *cache;
 	/* The burst history */
-	struct wavetcp_burst_hist history;
+	struct wavetcp_burst_hist *history;
 };
 
 /* Called to setup Wave for the current socket after it enters the CONNECTED
@@ -116,9 +141,8 @@ static void wavetcp_init(struct sock *sk)
 	tp->snd_cwnd = init_burst;
 
 	/* Used to avoid to take the SYN-ACK measurements, and for nothing else */
-	ca->initialized = 1;
-
-	ca->started = 0;
+	ca->flags = 0;
+	ca->flags = FLAG_INIT | FLAG_SAVE;
 
 	ca->burst = init_burst;
 	ca->delta_segments = init_burst;
@@ -127,15 +151,44 @@ static void wavetcp_init(struct sock *sk)
 	ca->first_rtt = 0;
 	ca->min_rtt = -1; /* a lot of time */
 	ca->avg_rtt = 0;
-	ca->save_burst = 1;
 	ca->rtt_samples_to_ignore = 0;
+	ca->max_rtt = 0;
+	ca->stab_factor = 0;
+	ca->avg_ack_train_disp = 0;
+
+	ca->history = kmalloc(sizeof (struct wavetcp_burst_hist), GFP_KERNEL);
 
 	/* Init the history of bwnd */
-	INIT_LIST_HEAD(&ca->history.list);
+	INIT_LIST_HEAD(&ca->history->list);
 
 	/* Init our cache pool for the bwnd history */
 	ca->cache = KMEM_CACHE(wavetcp_burst_hist, 0);
 	BUG_ON(ca->cache == 0);
+}
+
+static void wavetcp_release(struct sock *sk)
+{
+	struct wavetcp *ca = inet_csk_ca(sk);
+	struct wavetcp_burst_hist *tmp;
+	struct list_head *pos, *q;
+
+	if (!test_flag(FLAG_INIT, &ca->flags))
+		return;
+
+	DBG("%u [wavetcp_release]\n", tcp_time_stamp);
+
+	list_for_each_safe(pos, q, &ca->history->list){
+		tmp = list_entry(pos, struct wavetcp_burst_hist, list);
+		list_del(pos);
+		kmem_cache_free(ca->cache, tmp);
+	}
+
+	if (ca->history != 0)
+		kfree(ca->history);
+
+	/* Thanks for the cache, we don't need it anymore */
+	if (ca->cache != 0)
+		kmem_cache_destroy(ca->cache);
 }
 
 static void wavetcp_print_history(struct wavetcp *ca)
@@ -143,33 +196,10 @@ static void wavetcp_print_history(struct wavetcp *ca)
 	struct wavetcp_burst_hist *tmp;
 	struct list_head *pos, *q;
 
-
-	list_for_each_safe(pos, q, &ca->history.list){
+	list_for_each_safe(pos, q, &ca->history->list){
 		tmp = list_entry(pos, struct wavetcp_burst_hist, list);
-		DBG("%u [wavetcp_print_history] %u\n", tmp->size,
-		    tcp_time_stamp);
+		DBG("[wavetcp_print_history] %u\n", tmp->size);
 	}
-}
-static void wavetcp_release(struct sock *sk)
-{
-	struct wavetcp *ca = inet_csk_ca(sk);
-	struct wavetcp_burst_hist *tmp;
-	struct list_head *pos, *q;
-
-	if (!ca->initialized)
-		return;
-
-	DBG("%u [wavetcp_release]\n", tcp_time_stamp);
-
-	list_for_each_safe(pos, q, &ca->history.list){
-		tmp = list_entry(pos, struct wavetcp_burst_hist, list);
-		list_del(pos);
-		kmem_cache_free(ca->cache, tmp);
-	}
-
-	/* Thanks for the cache, we don't need it anymore */
-	if (ca->cache != 0)
-		kmem_cache_destroy(ca->cache);
 }
 
 /* Please explain that we will be forever in congestion avoidance. */
@@ -178,12 +208,6 @@ static u32 wavetcp_recalc_ssthresh(struct sock *sk)
 	DBG("%u [wavetcp_recalc_ssthresh]\n", tcp_time_stamp);
 	return 0;
 }
-
-/*
-   static void wavetcp_cong_avoid(struct sock *sk, u32 ack, u32 acked)
-   {
-   }
- */
 
 static void wavetcp_cong_control(struct sock *sk, const struct rate_sample *rs)
 {
@@ -196,15 +220,20 @@ static void wavetcp_cong_control(struct sock *sk, const struct rate_sample *rs)
 	    rs->acked_sacked, rs->prior_in_flight, rs->is_app_limited,
 	    rs->is_retrans);
 
-	if (!ca->initialized)
+	if (!test_flag(FLAG_INIT, &ca->flags))
 		return;
 }
 
 static void wavetcp_state(struct sock *sk, u8 new_state)
 {
+	struct wavetcp *ca = inet_csk_ca(sk);
+
 	switch (new_state) {
 	case TCP_CA_Open:
 		DBG("%u [wavetcp_state] set CA_Open\n", tcp_time_stamp);
+		/* We have fully recovered, so reset some variables */
+		ca->rtt_samples_to_ignore = 0;
+		ca->delta_segments = 0;
 		break;
 	case TCP_CA_Disorder:
 		DBG("%u [wavetcp_state] set CA_Disorder\n", tcp_time_stamp);
@@ -219,7 +248,6 @@ static void wavetcp_state(struct sock *sk, u8 new_state)
 		DBG("%u [wavetcp_state] set state %u\n",
 		    tcp_time_stamp, new_state);
 	}
-
 }
 
 static u32 wavetcp_undo_cwnd(struct sock *sk)
@@ -240,28 +268,28 @@ static void wavetcp_insert_burst(struct wavetcp *ca, u32 burst)
 	cur = (struct wavetcp_burst_hist *)kmem_cache_alloc(ca->cache,
 							    GFP_KERNEL);
 	BUG_ON(!cur);
+	BUG_ON(burst > init_burst+5);
 
 	cur->size = burst;
-	list_add_tail(&cur->list, &ca->history.list);
+	list_add_tail(&cur->list, &ca->history->list);
 }
 
 static void wavetcp_cwnd_event(struct sock *sk, enum tcp_ca_event event)
 {
 	struct wavetcp *ca = inet_csk_ca(sk);
 
-	if(!ca->initialized)
+	if(!test_flag(FLAG_INIT, &ca->flags))
 		return;
 
 	switch (event) {
 	case CA_EVENT_TX_START:
 		/* first transmit when no packets in flight */
-		DBG("%u [wavetcp_cwnd_event] TX_START, set burst to %u and timer to %u ms\n",
-		    tcp_time_stamp, init_burst, init_timer_ms);
+		DBG("%u [wavetcp_cwnd_event] TX_START\n", tcp_time_stamp);
 
-		if (!ca->started)
+		if (!test_flag(FLAG_START, &ca->flags))
 			wavetcp_insert_burst(ca, init_burst);
 
-		ca->started = 1;
+		set_flag(FLAG_START, &ca->flags);
 
 		break;
 	case CA_EVENT_CWND_RESTART:
@@ -298,16 +326,31 @@ static void wavetcp_cwnd_event(struct sock *sk, enum tcp_ca_event event)
 	}
 }
 
-static void wavetcp_adj_mode(struct wavetcp *ca, unsigned long ack_train_disp,
-			     unsigned long delta_rtt)
+static __always_inline void wavetcp_adj_mode(struct wavetcp *ca,
+					     unsigned long ack_train_disp,
+					     unsigned long delta_rtt)
 {
-	DBG("%u [wavetcp_adj_mode] NOT IMPLEMENTED YET", tcp_time_stamp);
+	ca->stab_factor = ca->avg_rtt / ack_train_disp;
+
+	ca->min_rtt = 0;
+	ca->avg_rtt = ca->max_rtt;
+	ca->tx_timer = init_timer_ms;
+
+	DBG("%u [wavetcp_adj_mode] stab_factor %u, avg_rtt %u, timer %u ms",
+	    tcp_time_stamp, ca->stab_factor, ca->avg_rtt, ca->tx_timer);
 }
 
-static void wavetcp_tracking_mode(struct wavetcp *ca, unsigned int ack_train_disp,
-				  unsigned long delta_rtt)
+static __always_inline void wavetcp_tracking_mode(struct wavetcp *ca,
+						  unsigned int ack_train_disp,
+						  unsigned long delta_rtt)
 {
 	ca->tx_timer = (ack_train_disp + (delta_rtt / 2)) / 1000;
+
+	if (ca->tx_timer == 0) {
+		DBG("%u [wavetcp_tracking_mode] increasing tx timer to 1 ms",
+		    tcp_time_stamp);
+		ca->tx_timer = 1;
+	}
 
 	DBG("%u [wavetcp_tracking_mode] tx timer is %u ms", tcp_time_stamp,
 	    ca->tx_timer);
@@ -319,8 +362,8 @@ static void wavetcp_tracking_mode(struct wavetcp *ca, unsigned int ack_train_dis
  *
  * we scale the first substraction by 1024 (to have a precision up to a = 0.001)
  */
-static unsigned long wavetcp_compute_weight(unsigned long first_rtt,
-					    unsigned long min_rtt)
+static __always_inline unsigned long wavetcp_compute_weight(unsigned long first_rtt,
+							    unsigned long min_rtt)
 {
 	unsigned long diff = first_rtt - min_rtt;
 	diff = diff << SHIFT_FACTOR;
@@ -332,6 +375,8 @@ static void wavetcp_round_terminated(struct wavetcp *ca, u32 burst)
 {
 	unsigned long delta_rtt;
 	unsigned int ack_train_disp;
+	DBG("%u [wavetcp_round_terminated] reached the burst size %u\n",
+	    tcp_time_stamp, burst);
 
 	BUG_ON(time_after((unsigned long) ca->first_ack_time,
 			  (unsigned long) tcp_time_stamp));
@@ -366,8 +411,8 @@ static void wavetcp_round_terminated(struct wavetcp *ca, u32 burst)
 		unsigned long right;
 		a = wavetcp_compute_weight(ca->first_rtt, ca->min_rtt);
 
-		DBG("%u [wavetcp_round_terminated] init. avg %lu us, first %lu us, "
-		    "min %lu us, a (shifted) %lu",
+		DBG("%u [wavetcp_round_terminated] init. avg %u us, first %u us, "
+		    "min %u us, a (shifted) %lu",
 		    tcp_time_stamp, ca->avg_rtt, ca->first_rtt, ca->min_rtt, a);
 
 		left = (a * ca->avg_rtt) >> SHIFT_FACTOR;
@@ -382,10 +427,25 @@ static void wavetcp_round_terminated(struct wavetcp *ca, u32 burst)
 	ack_train_disp = jiffies_to_usecs(tcp_time_stamp - ca->first_ack_time);
 	delta_rtt = ca->avg_rtt - ca->min_rtt;
 
-	DBG("%u [wavetcp_round_terminated] done. ack_train_disp %u us delta_rtt %lu us "
-	    "avg_rtt %lu us\n", tcp_time_stamp,
-	    ack_train_disp, delta_rtt, ca->avg_rtt);
+	/* Take the average train dispersion with a weighted average (factor?) */
+	if (ca->avg_ack_train_disp == 0)
+		ca->avg_ack_train_disp = ack_train_disp;
+	else if (ack_train_disp != 0)
+		ca->avg_ack_train_disp = (ca->avg_ack_train_disp/2) + (ack_train_disp/2);
+	else if (ack_train_disp == 0)
+		/* We received a cumulative ACK just after we sent the data, so
+		 * the dispersion would be close to zero. Just use the average
+		 * in this case */
+		ack_train_disp = ca->avg_ack_train_disp;
 
+	DBG("%u [wavetcp_round_terminated] done. ack_train_disp %u us delta_rtt %lu us "
+	    "avg_rtt %u us, sf %u\n", tcp_time_stamp,
+	    ack_train_disp, delta_rtt, ca->avg_rtt, ca->stab_factor);
+
+	if (ca->stab_factor > 0) {
+		--ca->stab_factor;
+		return;
+	}
 
 	/* delta_rtt is in us, beta_ms in ms */
 	if (delta_rtt > beta_ms * 1000)
@@ -394,73 +454,87 @@ static void wavetcp_round_terminated(struct wavetcp *ca, u32 burst)
 		wavetcp_tracking_mode(ca, ack_train_disp, delta_rtt);
 }
 
-static void wavetcp_acce(struct wavetcp *ca, unsigned long rtt_us)
+static void wavetcp_acce(struct wavetcp *ca, s32 rtt_us, u32 pkts_acked)
 {
 	struct wavetcp_burst_hist *tmp;
 	struct list_head *pos;
 
-	pos = ca->history.list.next;
+	pos = ca->history->list.next;
 	tmp = list_entry(pos, struct wavetcp_burst_hist, list);
 
 	if (tmp->size == 0) {
 		/* No burst in memory. Most likely we sent some segments out of
 		 * the allowed window (e.g., loss probe) */
-		DBG("%u [wavetcp_acce] WARNING!!! 0 burst\n",
-		    tcp_time_stamp);
+		DBG("%u [wavetcp_acce] WARNING! empty burst\n", tcp_time_stamp);
 		wavetcp_print_history(ca);
 		goto reset;
 	}
 
-	/* If this is the first sample, take the RTT and remember the time.
-	 * Small filtering: avoid to init the round if the rtt is very high.
-	 * Added to avoid to begin the measurement after a tail loss probe, so
-	 * probably it could be the case to add a test over the ca state. */
 	if (ca->first_ack_time == 0) {
+		ca->first_ack_time = tcp_time_stamp;
+		DBG("%u [wavetcp_acce] first ack of the train\n",
+		    tcp_time_stamp);
+	}
+
+	if (ca->first_rtt == 0) {
+		/* If this is the first sample, take the RTT and remember the time.
+		 * Small filtering: avoid to init the round if the rtt is very high.
+		 * Added to avoid to begin the measurement after a tail loss probe, so
+		* probably it could be the case to add a test over the ca state. */
 		if (rtt_us > 3*ca->avg_rtt && ca->rtt_samples_to_ignore > 0) {
-			DBG("%u [wavetcp_acce] Ignoring first rtt of %lu\n",
+			DBG("%u [wavetcp_acce] Ignoring first rtt of %i\n",
 			    tcp_time_stamp, rtt_us);
 			ca->rtt_samples_to_ignore--;
 			return;
 		}
 
-		DBG("%u [wavetcp_acce] first measurement rtt %lu\n",
-		    tcp_time_stamp, rtt_us);
-		ca->first_ack_time = tcp_time_stamp;
-		ca->first_rtt = rtt_us;
+		if (rtt_us > 0)
+			ca->first_rtt = rtt_us;
+		else
+			/* We don't have the first RTT of the burst. TODO: Maybe
+			 * try to get the 2nd, the 3rd, ..., and only if they
+			 * are all 0 then use the avg? */
+			ca->first_rtt = ca->avg_rtt;
+
+		DBG("%u [wavetcp_acce] first measurement rtt %i\n",
+		    tcp_time_stamp, ca->first_rtt);
 	}
 
 	/* Check the minimum rtt we have seen */
-	if (rtt_us < ca->min_rtt) {
+	if (rtt_us > 0 && rtt_us < ca->min_rtt) {
 		ca->min_rtt = rtt_us;
-		DBG("%u [wavetcp_acce] min rtt %lu\n", tcp_time_stamp,
+		DBG("%u [wavetcp_acce] min rtt %u\n", tcp_time_stamp,
 		    rtt_us);
 	}
 
-	/* Train management */
-	if (ca->pkts_acked > tmp->size) {
-		/* If this fails, we missed the burst boundary */
-		DBG("%u [wavetcp_acce] pkts_acked %u, size %u",
-		    tcp_time_stamp, ca->pkts_acked, tmp->size);
-		BUG_ON(ca->pkts_acked > tmp->size);
-	} else if (ca->pkts_acked == tmp->size) {
-		/* Burst acked. Do the calculations */
-		DBG("%u [wavetcp_acce] reached the burst size %u\n",
-		    tcp_time_stamp, tmp->size);
+	if (rtt_us > ca->max_rtt)
+		ca->max_rtt = rtt_us;
 
+	/* Train management. Pkts_acked could be 0 */
+	ca->pkts_acked += pkts_acked;
+
+	if (ca->pkts_acked < tmp->size)
+		return;
+
+	while (ca->pkts_acked >= tmp->size) {
 		wavetcp_round_terminated(ca, tmp->size);
+
+		ca->pkts_acked -= tmp->size;
+
+		DBG("%u [wavetcp_acce] resetting RTT values for next round\n",
+		    tcp_time_stamp);
 
 		/* Delete the burst from the history */
 		list_del(pos);
 		kmem_cache_free(ca->cache, tmp);
 
-		goto reset;
+		/* Take next burst */
+		pos = ca->history->list.next;
+		tmp = list_entry(pos, struct wavetcp_burst_hist, list);
 	}
-
-	return;
 
 reset:
 	/* Reset the variables needed for the beginning of the next round*/
-	ca->pkts_acked = 0;
 	ca->first_ack_time = 0;
 	ca->first_rtt = 0;
 	DBG("%u [wavetcp_acce] resetting RTT values for next round\n",
@@ -469,7 +543,7 @@ reset:
 
 /* Invoked each time we receive an ACK. Obviously, this function also gets
  * called when we receive the SYN-ACK, but we ignore it thanks to the
- * ca->initialized flag.
+ * FLAG_INIT flag.
  *
  * We close the cwnd of the amount of segments acked, because we don't like
  * sending out segments if the timer is not expired. Without doing this, we
@@ -479,45 +553,47 @@ static void wavetcp_acked(struct sock *sk, const struct ack_sample *sample)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct wavetcp *ca = inet_csk_ca(sk);
-	unsigned int i;
+	s32 rtt_us;
 
-	if (!ca->initialized)
+	if (!test_flag(FLAG_INIT, &ca->flags))
 		return;
 
-	DBG("%u [wavetcp_acked] pkts_acked %u, rtt_us %u, in_flight %u "
-	    ", cwnd %u\n",
+	DBG("%u [wavetcp_acked] pkts_acked %u, rtt_us %i, in_flight %u "
+	    ", cwnd %u, seq ack %u\n",
 	    tcp_time_stamp, sample->pkts_acked, sample->rtt_us,
-	    sample->in_flight, tp->snd_cwnd);
+	    sample->in_flight, tp->snd_cwnd, tp->rtt_seq);
 
-	/* Now do the ACCE calculations for each segment acked */
-	for (i=0; i<sample->pkts_acked; ++i) {
-		++ca->pkts_acked;
-		wavetcp_acce (ca, sample->rtt_us);
-	}
+	/* More than 2 is probably a cumulative ACK after a retransmit phase.
+	 * Use the average RTT */
+	if (sample->pkts_acked > 2)
+		rtt_us = (s32) ca->avg_rtt;
+	else
+		rtt_us = sample->rtt_us;
 
-	if (tp->snd_cwnd >= sample->pkts_acked) {
-		/* The objective here is to avoid to create space for sending segments.
-		 * This is a duty for the timer expiration. */
-		tp->snd_cwnd -= sample->pkts_acked;
-	} else {
+	/* We can divide the ACCE function in two part: the first take care of
+	 * the RTT, and the second of the train management. Here we could have
+	 * pkts_acked == 0, but with RTT values (because the underlying TCP can
+	 * identify what segment has been ACKed through the SACK option). In any
+	 * case, therefore, we enter wavetcp_acce.*/
+	wavetcp_acce (ca, rtt_us, sample->pkts_acked);
+
+	if (tp->snd_cwnd < sample->pkts_acked) {
 		/* We sent some scattered segments, so the burst segments and
 		 * the ACK we get is not aligned.
 		 */
 		ca->delta_segments += sample->pkts_acked - tp->snd_cwnd;
-		tp->snd_cwnd = 0;
 	}
+
+	/* Brutally set the cwnd in order to not let segment out */
+	tp->snd_cwnd = tcp_packets_in_flight(tp);
 
 	DBG("%u [wavetcp_acked] new window %u in_flight %u delta %i\n",
 	    tcp_time_stamp, tp->snd_cwnd, tcp_packets_in_flight(tp),
 	    ca->delta_segments);
-
-	/* If this fails, it means that some segments could leave */
-	if (tp->snd_cwnd > tcp_packets_in_flight(tp))
-		BUG_ON(tp->snd_cwnd - (u32)(ca->delta_segments) > tcp_packets_in_flight(tp));
 }
 
 /* The TCP informs us that the timer is expired (or has never been set). We can
- * infer the latter by the ca->started flag: if it's false, don't increase the
+ * infer the latter by the FLAG_STARTED flag: if it's false, don't increase the
  * cwnd, because it is at its default value (init_burst) and we still have to
  * transmit the first burst.
  */
@@ -527,9 +603,9 @@ static void wavetcp_timer_expired(struct sock *sk)
 	struct wavetcp *ca = inet_csk_ca(sk);
 	u32 current_burst = ca->burst;
 
-	BUG_ON(!ca->initialized);
+	BUG_ON(!test_flag(FLAG_INIT, &ca->flags));
 
-	if (!ca->started)
+	if (!test_flag(FLAG_START, &ca->flags))
 		return;
 
 	if (ca->delta_segments < 0) {
@@ -573,7 +649,7 @@ static void wavetcp_timer_expired(struct sock *sk)
 	}
 
 	tp->snd_cwnd += current_burst;
-	ca->save_burst = 1;
+	set_flag(FLAG_SAVE, &ca->flags);
 
 	DBG("%u [wavetcp_timer_expired], increased window of %u segments, "
 	    "total %u, delta %i, in_flight %u\n",
@@ -590,9 +666,9 @@ static void wavetcp_timer_expired(struct sock *sk)
 static unsigned long wavetcp_get_timer(struct sock *sk)
 {
 	struct wavetcp *ca = inet_csk_ca(sk);
-	unsigned long timer;
+	u16 timer;
 
-	BUG_ON(!ca->initialized);
+	BUG_ON(!test_flag(FLAG_INIT, &ca->flags));
 
 	timer = min_t(unsigned long, ca->tx_timer, init_timer_ms);
 
@@ -628,15 +704,17 @@ static void wavetcp_segment_sent(struct sock *sk, u32 sent)
 	struct wavetcp *ca = inet_csk_ca(sk);
 	u64 rate;
 
+	BUG_ON(sent > ca->burst);
+
 	if (ca->delta_segments < sent)
 		ca->rtt_samples_to_ignore += sent;
 
 	ca->delta_segments -= sent;
 
-	if (ca->save_burst)
+	if (test_flag(FLAG_SAVE, &ca->flags) && sent > 0)
 		wavetcp_insert_burst(ca, sent);
 
-	ca->save_burst = 0;
+	clear_flag(FLAG_SAVE, &ca->flags);
 
 	if (ca->delta_segments >= 0 &&
 	    ca->burst > sent &&
