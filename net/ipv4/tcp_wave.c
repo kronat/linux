@@ -590,12 +590,16 @@ static void wavetcp_timer_expired(struct sock *sk)
 static unsigned long wavetcp_get_timer(struct sock *sk)
 {
 	struct wavetcp *ca = inet_csk_ca(sk);
+	unsigned long timer;
+
 	BUG_ON(!ca->initialized);
 
-	DBG("%u [wavetcp_get_timer] returning timer of %u ms\n", tcp_time_stamp,
-	    ca->tx_timer);
+	timer = min_t(unsigned long, ca->tx_timer, init_timer_ms);
 
-	return msecs_to_jiffies(ca->tx_timer);
+	DBG("%u [wavetcp_get_timer] returning timer of %u ms\n", tcp_time_stamp,
+	    timer);
+
+	return msecs_to_jiffies(timer);
 }
 
 static u64 wavetcp_rate_bytes_per_sec(struct sock *sk)
