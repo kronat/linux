@@ -209,24 +209,12 @@ static u32 wavetcp_recalc_ssthresh(struct sock *sk)
 	return 0;
 }
 
-static void wavetcp_cong_control(struct sock *sk, const struct rate_sample *rs)
-{
-	struct wavetcp *ca = inet_csk_ca(sk);
-
-	DBG("%u [wavetcp_cong_control] prior_delivered %u, delivered %i, interval_us %li, "
-	    "rtt_us %li, losses %i, ack_sack %u, prior_in_flight %u, is_app %i,"
-	    " is_retrans %i\n", tcp_time_stamp, rs->prior_delivered,
-	    rs->delivered, rs->interval_us, rs->rtt_us, rs->losses,
-	    rs->acked_sacked, rs->prior_in_flight, rs->is_app_limited,
-	    rs->is_retrans);
-
-	if (!test_flag(FLAG_INIT, &ca->flags))
-		return;
-}
-
 static void wavetcp_state(struct sock *sk, u8 new_state)
 {
 	struct wavetcp *ca = inet_csk_ca(sk);
+
+	if(!test_flag(FLAG_INIT, &ca->flags))
+		return;
 
 	switch (new_state) {
 	case TCP_CA_Open:
@@ -252,8 +240,10 @@ static void wavetcp_state(struct sock *sk, u8 new_state)
 
 static u32 wavetcp_undo_cwnd(struct sock *sk)
 {
+	struct tcp_sock *tp = tcp_sk(sk);
+	/* Not implemented yet. We stick to the decision made earlier */
 	DBG("%u [wavetcp_undo_cwnd]\n", tcp_time_stamp);
-	return init_burst;
+	return tp->snd_cwnd;
 }
 
 /* Add the size of the burst in the history of bursts */
@@ -454,10 +444,14 @@ static void wavetcp_round_terminated(struct wavetcp *ca, u32 burst)
 		wavetcp_tracking_mode(ca, ack_train_disp, delta_rtt);
 }
 
-static void wavetcp_acce(struct wavetcp *ca, s32 rtt_us, u32 pkts_acked)
+static void wavetcp_cong_control(struct sock *sk, const struct rate_sample *rs)
 {
 	struct wavetcp_burst_hist *tmp;
 	struct list_head *pos;
+	struct wavetcp *ca = inet_csk_ca(sk);
+
+	if (!test_flag(FLAG_INIT, &ca->flags))
+		return;
 
 	pos = ca->history->list.next;
 	tmp = list_entry(pos, struct wavetcp_burst_hist, list);
@@ -470,6 +464,49 @@ static void wavetcp_acce(struct wavetcp *ca, s32 rtt_us, u32 pkts_acked)
 		goto reset;
 	}
 
+	DBG("%u [wavetcp_cong_control] prior_delivered %u, delivered %i, interval_us %li, "
+	    "rtt_us %li, losses %i, ack_sack %u, prior_in_flight %u, is_app %i,"
+	    " is_retrans %i\n", tcp_time_stamp, rs->prior_delivered,
+	    rs->delivered, rs->interval_us, rs->rtt_us, rs->losses,
+	    rs->acked_sacked, rs->prior_in_flight, rs->is_app_limited,
+	    rs->is_retrans);
+
+	if (!test_flag(FLAG_INIT, &ca->flags))
+		return;
+
+	/* Train management.*/
+	ca->pkts_acked += rs->acked_sacked;
+
+	if (ca->pkts_acked < tmp->size)
+		return;
+
+	while (ca->pkts_acked >= tmp->size) {
+		wavetcp_round_terminated(ca, tmp->size);
+
+		ca->pkts_acked -= tmp->size;
+
+		DBG("%u [wavetcp_cong_control] resetting RTT values for next round\n",
+		    tcp_time_stamp);
+
+		/* Delete the burst from the history */
+		list_del(pos);
+		kmem_cache_free(ca->cache, tmp);
+
+		/* Take next burst */
+		pos = ca->history->list.next;
+		tmp = list_entry(pos, struct wavetcp_burst_hist, list);
+	}
+
+reset:
+	/* Reset the variables needed for the beginning of the next round*/
+	ca->first_ack_time = 0;
+	ca->first_rtt = 0;
+	DBG("%u [wavetcp_cong_control] resetting RTT values for next round\n",
+	    tcp_time_stamp);
+}
+
+static void wavetcp_acce(struct wavetcp *ca, s32 rtt_us, u32 pkts_acked)
+{
 	if (ca->first_ack_time == 0) {
 		ca->first_ack_time = tcp_time_stamp;
 		DBG("%u [wavetcp_acce] first ack of the train\n",
@@ -509,36 +546,6 @@ static void wavetcp_acce(struct wavetcp *ca, s32 rtt_us, u32 pkts_acked)
 
 	if (rtt_us > ca->max_rtt)
 		ca->max_rtt = rtt_us;
-
-	/* Train management. Pkts_acked could be 0 */
-	ca->pkts_acked += pkts_acked;
-
-	if (ca->pkts_acked < tmp->size)
-		return;
-
-	while (ca->pkts_acked >= tmp->size) {
-		wavetcp_round_terminated(ca, tmp->size);
-
-		ca->pkts_acked -= tmp->size;
-
-		DBG("%u [wavetcp_acce] resetting RTT values for next round\n",
-		    tcp_time_stamp);
-
-		/* Delete the burst from the history */
-		list_del(pos);
-		kmem_cache_free(ca->cache, tmp);
-
-		/* Take next burst */
-		pos = ca->history->list.next;
-		tmp = list_entry(pos, struct wavetcp_burst_hist, list);
-	}
-
-reset:
-	/* Reset the variables needed for the beginning of the next round*/
-	ca->first_ack_time = 0;
-	ca->first_rtt = 0;
-	DBG("%u [wavetcp_acce] resetting RTT values for next round\n",
-	    tcp_time_stamp);
 }
 
 /* Invoked each time we receive an ACK. Obviously, this function also gets
@@ -683,10 +690,11 @@ static u64 wavetcp_rate_bytes_per_sec(struct sock *sk)
 	struct wavetcp *ca = inet_csk_ca(sk);
 	u64 rate;
 	u64 times_per_sec;
+	u16 timer = min_t(u16, ca->tx_timer, init_timer_ms);
 
-	BUG_ON(ca->tx_timer > MSEC_PER_SEC);
+	BUG_ON(timer > MSEC_PER_SEC);
 
-	times_per_sec = MSEC_PER_SEC / ca->tx_timer;
+	times_per_sec = MSEC_PER_SEC / timer;
 
 	rate = ca->burst;
 	rate *= times_per_sec;
