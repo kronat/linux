@@ -146,7 +146,7 @@ static void wavetcp_init(struct sock *sk)
 
 	ca->burst = init_burst;
 	ca->delta_segments = init_burst;
-	ca->tx_timer = init_timer_ms;
+	ca->tx_timer = init_timer_ms * USEC_PER_MSEC;
 	ca->first_ack_time = 0;
 	ca->first_rtt = 0;
 	ca->min_rtt = -1; /* a lot of time */
@@ -324,9 +324,9 @@ static __always_inline void wavetcp_adj_mode(struct wavetcp *ca,
 
 	ca->min_rtt = 0;
 	ca->avg_rtt = ca->max_rtt;
-	ca->tx_timer = init_timer_ms;
+	ca->tx_timer = init_timer_ms * USEC_PER_MSEC;
 
-	DBG("%u [wavetcp_adj_mode] stab_factor %u, avg_rtt %u, timer %u ms",
+	DBG("%u [wavetcp_adj_mode] stab_factor %u, avg_rtt %u, timer %u us",
 	    tcp_time_stamp, ca->stab_factor, ca->avg_rtt, ca->tx_timer);
 }
 
@@ -334,15 +334,15 @@ static __always_inline void wavetcp_tracking_mode(struct wavetcp *ca,
 						  unsigned int ack_train_disp,
 						  unsigned long delta_rtt)
 {
-	ca->tx_timer = (ack_train_disp + (delta_rtt / 2)) / 1000;
+	ca->tx_timer = (ack_train_disp + (delta_rtt / 2));
 
 	if (ca->tx_timer == 0) {
-		DBG("%u [wavetcp_tracking_mode] increasing tx timer to 1 ms",
+		DBG("%u [wavetcp_tracking_mode] increasing tx timer to 1000 us",
 		    tcp_time_stamp);
-		ca->tx_timer = 1;
+		ca->tx_timer = 1000;
 	}
 
-	DBG("%u [wavetcp_tracking_mode] tx timer is %u ms", tcp_time_stamp,
+	DBG("%u [wavetcp_tracking_mode] tx timer is %u us", tcp_time_stamp,
 	    ca->tx_timer);
 }
 
@@ -677,12 +677,12 @@ static unsigned long wavetcp_get_timer(struct sock *sk)
 
 	BUG_ON(!test_flag(FLAG_INIT, &ca->flags));
 
-	timer = min_t(unsigned long, ca->tx_timer, init_timer_ms);
+	timer = min_t(unsigned long, ca->tx_timer, init_timer_ms*USEC_PER_MSEC);
 
 	DBG("%u [wavetcp_get_timer] returning timer of %u ms\n", tcp_time_stamp,
 	    timer);
 
-	return msecs_to_jiffies(timer);
+	return usecs_to_jiffies(timer);
 }
 
 static u64 wavetcp_rate_bytes_per_sec(struct sock *sk)
@@ -690,11 +690,11 @@ static u64 wavetcp_rate_bytes_per_sec(struct sock *sk)
 	struct wavetcp *ca = inet_csk_ca(sk);
 	u64 rate;
 	u64 times_per_sec;
-	u16 timer = min_t(u16, ca->tx_timer, init_timer_ms);
+	u16 timer = min_t(u16, ca->tx_timer, init_timer_ms*USEC_PER_MSEC);
 
-	BUG_ON(timer > MSEC_PER_SEC);
+	BUG_ON(timer > USEC_PER_SEC);
 
-	times_per_sec = MSEC_PER_SEC / timer;
+	times_per_sec = USEC_PER_SEC / timer;
 
 	rate = ca->burst;
 	rate *= times_per_sec;
