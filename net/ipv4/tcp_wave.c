@@ -536,12 +536,17 @@ static void wavetcp_acce(struct wavetcp *ca, s32 rtt_us, u32 pkts_acked)
 			 * are all 0 then use the avg? */
 			ca->first_rtt = ca->avg_rtt;
 
+		BUG_ON(ca->first_rtt < 0);
+
 		DBG("%u [wavetcp_acce] first measurement rtt %i\n",
 		    tcp_time_stamp, ca->first_rtt);
 	}
 
+	if (rtt_us < 0)
+		return;
+
 	/* Check the minimum rtt we have seen */
-	if (rtt_us > 0 && rtt_us < ca->min_rtt) {
+	if (rtt_us < ca->min_rtt) {
 		ca->min_rtt = rtt_us;
 		DBG("%u [wavetcp_acce] min rtt %u\n", tcp_time_stamp,
 		    rtt_us);
