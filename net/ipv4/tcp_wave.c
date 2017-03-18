@@ -49,7 +49,12 @@ module_param(beta_ms, uint, 0644);
 MODULE_PARM_DESC(beta_ms, "beta parameter (ms)");
 
 /* Shift factor for the exponentially weighted average. */
-#define SHIFT_FACTOR 10
+#define AVG_SCALE 10
+#define AVG_UNIT (1 << AVG_SCALE)
+
+/* Taken from BBR */
+#define BW_SCALE 24
+#define BW_UNIT (1 << BW_SCALE)
 
 /* Tell if the driver is initialized (init has been called) */
 #define FLAG_INIT       0x1
@@ -95,10 +100,10 @@ struct wavetcp {
 	 * if, for some reason, the TCP send segments out of the timer */
 	u8 rtt_samples_to_ignore;
 	/* Average ack train dispersion */
-	unsigned long avg_ack_train_disp;
+	u32 avg_ack_train_disp;
 
 	/* First ACK time of the round */
-	unsigned int first_ack_time;
+	u32 first_ack_time;
 	/* First RTT of the round */
 	u32 first_rtt;
 	/* Minimum RTT of the round */
@@ -358,22 +363,49 @@ static __always_inline unsigned long wavetcp_compute_weight(unsigned long first_
 {
 	unsigned long diff = first_rtt - min_rtt;
 
-	diff = diff << SHIFT_FACTOR;
+	diff = diff * AVG_UNIT;
 
 	return diff / first_rtt;
 }
 
-static void wavetcp_round_terminated(struct wavetcp *ca, u32 burst)
+static u32 calculate_ack_train_disp(struct wavetcp *ca, u64 bw, u32 burst)
 {
-	unsigned long delta_rtt;
-	unsigned int ack_train_disp;
+	u32 ack_train_disp = jiffies_to_usecs(tcp_time_stamp - ca->first_ack_time);
 
-	DBG("%u [wavetcp_round_terminated] reached the burst size %u\n",
-	    tcp_time_stamp, burst);
+	if (ack_train_disp == 0) {
+		/* We received a cumulative ACK just after we sent the data, so
+		 * the dispersion would be close to zero. Just use the Linux
+		 * value in this case, or the average */
+		if (bw > 0) {
+			ack_train_disp = bw;
+			do_div(ack_train_disp, burst);
+			DBG("%u [calculate_ack_train_disp] ack_train_disp from linux %u\n",
+			    tcp_time_stamp, ack_train_disp);
+		} else if (ca->avg_ack_train_disp > 0) {
+			DBG("%u [calculate_ack_train_disp] ack_train_disp from avg %u\n",
+			    tcp_time_stamp, ca->avg_ack_train_disp);
+			ack_train_disp = ca->avg_ack_train_disp;
+		} else {
+			DBG("%u [calculate_ack_train_disp] is not possible to calculate ack_train_disp\n",
+			    tcp_time_stamp);
+			return 0;
+		}
+	} else {
+		if (ca->avg_ack_train_disp == 0) {
+			DBG("%u [calculate_ack_train_disp] avg_ack_train_disp is 0, setting ours: %i\n",
+			    tcp_time_stamp, ack_train_disp);
+			ca->avg_ack_train_disp = ack_train_disp;
+		} else {
+			ca->avg_ack_train_disp = (ca->avg_ack_train_disp / 2) + (ack_train_disp / 2);
+			DBG("%u [calculate_ack_train_disp] avg_ack_train_disp updated, result %u\n",
+			    tcp_time_stamp, ca->avg_ack_train_disp);
+		}
+	}
+	return ack_train_disp;
+}
 
-	BUG_ON(time_after((unsigned long)ca->first_ack_time,
-			  (unsigned long)tcp_time_stamp));
-
+static u64 calculate_delta_rtt(struct wavetcp *ca)
+{
 	/* Why the first if?
 	 *
 	 * a = (first_rtt - min_rtt) / first_rtt = 1 - (min_rtt/first_rtt)
@@ -404,39 +436,59 @@ static void wavetcp_round_terminated(struct wavetcp *ca, u32 burst)
 		unsigned long right;
 		a = wavetcp_compute_weight(ca->first_rtt, ca->min_rtt);
 
-		DBG("%u [wavetcp_round_terminated] init. avg %u us, first %u us, "
+		DBG("%u [calculate_delta_rtt] init. avg %u us, first %u us, "
 		    "min %u us, a (shifted) %lu",
 		    tcp_time_stamp, ca->avg_rtt, ca->first_rtt, ca->min_rtt, a);
 
-		left = (a * ca->avg_rtt) >> SHIFT_FACTOR;
-		right = (((1 << SHIFT_FACTOR) - a) * ca->first_rtt) >> SHIFT_FACTOR;
+		left = (a * ca->avg_rtt) / AVG_UNIT;
+		right = ((AVG_UNIT - a) * ca->first_rtt) / AVG_UNIT;
 
 		ca->avg_rtt = left + right;
 	}
 
+	DBG("%u [calculate_delta_rtt] final avg %u\n",
+	    tcp_time_stamp, ca->avg_rtt);
 	/* We clearly missed a measurements if this happens */
 	BUG_ON(ca->avg_rtt < ca->min_rtt);
+	return ca->avg_rtt - ca->min_rtt;
+}
 
-	ack_train_disp = jiffies_to_usecs(tcp_time_stamp - ca->first_ack_time);
-	delta_rtt = ca->avg_rtt - ca->min_rtt;
+static void wavetcp_round_terminated(struct sock *sk, const struct rate_sample *rs,
+				     u32 burst)
+{
+	u64 delta_rtt;
+	u32 ack_train_disp;
+	u64 bw = 0;
+	struct wavetcp *ca = inet_csk_ca(sk);
 
-	/* Take the average train dispersion with a weighted average (factor?) */
-	if (ca->avg_ack_train_disp == 0)
-		ca->avg_ack_train_disp = ack_train_disp;
-	else if (ack_train_disp != 0)
-		ca->avg_ack_train_disp = (ca->avg_ack_train_disp / 2) + (ack_train_disp / 2);
-	else if (ack_train_disp == 0)
-		/* We received a cumulative ACK just after we sent the data, so
-		 * the dispersion would be close to zero. Just use the average
-		 * in this case */
-		ack_train_disp = ca->avg_ack_train_disp;
+	if (rs->delivered > 0) {
+		bw = (u64)rs->delivered * BW_UNIT;
+		do_div(bw, rs->interval_us);
+		bw /= BW_UNIT;
+	}
 
-	DBG("%u [wavetcp_round_terminated] done. ack_train_disp %u us delta_rtt %lu us "
-	    "avg_rtt %u us, sf %u\n", tcp_time_stamp,
-	    ack_train_disp, delta_rtt, ca->avg_rtt, ca->stab_factor);
+	DBG("%u [wavetcp_round_terminated] reached the burst size %u, linux bw %llu\n",
+	    tcp_time_stamp, burst, bw);
+
+	BUG_ON(time_after((unsigned long)ca->first_ack_time,
+			  (unsigned long)tcp_time_stamp));
+
+	ack_train_disp = calculate_ack_train_disp(ca, bw, burst);
+	if (ack_train_disp == 0) {
+		DBG("%u [wavetcp_round_terminated] without ack_train_disp, returning\n",
+		    tcp_time_stamp);
+		return;
+	}
+
+	delta_rtt = calculate_delta_rtt(ca);
+
+	DBG("%u [wavetcp_round_terminated] done. ack_train_disp %u us delta_rtt %llu us "
+	    "sf %u\n", tcp_time_stamp, ack_train_disp, delta_rtt, ca->stab_factor);
 
 	if (ca->stab_factor > 0) {
 		--ca->stab_factor;
+		DBG("%u [wavetcp_round_terminated] avoiding update for stability reasons\n",
+		    tcp_time_stamp);
 		return;
 	}
 
@@ -484,7 +536,7 @@ static void wavetcp_cong_control(struct sock *sk, const struct rate_sample *rs)
 		return;
 
 	while (ca->pkts_acked >= tmp->size) {
-		wavetcp_round_terminated(ca, tmp->size);
+		wavetcp_round_terminated(sk, rs, tmp->size);
 
 		ca->pkts_acked -= tmp->size;
 
@@ -498,6 +550,11 @@ static void wavetcp_cong_control(struct sock *sk, const struct rate_sample *rs)
 		/* Take next burst */
 		pos = ca->history->list.next;
 		tmp = list_entry(pos, struct wavetcp_burst_hist, list);
+
+		/* If we cycle, inside wavetcp_round_terminated we will take the
+		 * Linux path instead of the wave path.. first_rtt will not be
+		 * read, so don't waste a cycle to set it */
+		ca->first_ack_time = tcp_time_stamp;
 	}
 
 reset:
