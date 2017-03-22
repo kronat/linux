@@ -282,9 +282,6 @@ static void wavetcp_cwnd_event(struct sock *sk, enum tcp_ca_event event)
 		/* first transmit when no packets in flight */
 		DBG("%u [wavetcp_cwnd_event] TX_START\n", tcp_time_stamp);
 
-		if (!test_flag(FLAG_START, &ca->flags))
-			wavetcp_insert_burst(ca, init_burst);
-
 		set_flag(FLAG_START, &ca->flags);
 
 		break;
