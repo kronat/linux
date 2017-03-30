@@ -772,7 +772,12 @@ static void wavetcp_segment_sent(struct sock *sk, u32 sent)
 	struct wavetcp *ca = inet_csk_ca(sk);
 	u64 rate;
 
-	BUG_ON(sent > ca->burst);
+	if (sent > ca->burst) {
+		DBG("%u [wavetcp_segment_sent] BIG Error! sent %u, burst %u"
+		    " cwnd %u\n, TSO very probable",
+		    tcp_time_stamp, sent, ca->burst, tp->snd_cwnd);
+		BUG_ON(sent > ca->burst);
+	}
 
 	if (ca->delta_segments < sent)
 		ca->rtt_samples_to_ignore += sent;
