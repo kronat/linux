@@ -794,9 +794,13 @@ static void wavetcp_segment_sent(struct sock *sk, u32 sent)
 	    tcp_packets_in_flight(tp) <= tp->snd_cwnd) {
 		/* Reduce the cwnd accordingly, because we didn't sent enough
 		 * to cover it (we are app limited probably) */
-		tp->snd_cwnd -= ca->burst - sent;
-		DBG("%u [wavetcp_segment_sent] reducing cwnd by %u\n",
-		    tcp_time_stamp, ca->burst - sent);
+		u32 diff = ca->burst - sent;
+		if (tp->snd_cwnd >= diff)
+			tp->snd_cwnd -= diff;
+		else
+			tp->snd_cwnd = 0;
+		DBG("%u [wavetcp_segment_sent] reducing cwnd by %u, value %u\n",
+		    tcp_time_stamp, ca->burst - sent, tp->snd_cwnd);
 	}
 
 	rate = wavetcp_rate_bytes_per_sec(sk);
