@@ -614,8 +614,8 @@ static void wavetcp_timer_expired(struct sock *sk)
 	BUG_ON(!test_flag(FLAG_INIT, &ca->flags));
 
 	if (!test_flag(FLAG_START, &ca->flags)) {
-		DBG("%u [wavetcp_timer_expired] returning because of !FLAG_START\n",
-		    tcp_time_stamp);
+		DBG("%u [wavetcp_timer_expired] returning because of !FLAG_START, leaving cwnd %u\n",
+		    tcp_time_stamp, tp->snd_cwnd);
 		return;
 	}
 
