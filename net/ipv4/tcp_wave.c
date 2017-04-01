@@ -699,10 +699,10 @@ static void wavetcp_timer_expired(struct sock *sk)
 		/* In the previous round, we didn't send the entire burst.
 		 * Probably some adjustment is needed. But for now nothing.
 		 */
-		ca->delta_segments += current_burst;
+		ca->delta_segments = current_burst;
 	else
 		/* No delta segments, in the previous round we were good */
-		ca->delta_segments += current_burst;
+		ca->delta_segments = current_burst;
 
 	if (current_burst < min_burst) {
 		DBG("%u [wavetcp_timer_expired] WARNING !! not min_burst",
