@@ -666,7 +666,7 @@ static void wavetcp_timer_expired(struct sock *sk)
 	if (tp->snd_cwnd - tcp_packets_in_flight(tp) > current_burst) {
 		DBG("%u [wavetcp_timer_expired] OK. Something is wrong."
 		    " cwnd %u, in_flight %u, current burst %u\n",
-		    tcp_time_stamp, tp->snd_cwnd, tcp_packets_in_flight,
+		    tcp_time_stamp, tp->snd_cwnd, tcp_packets_in_flight(tp),
 		    current_burst);
 	}
 }
@@ -694,7 +694,7 @@ static void wavetcp_segment_sent(struct sock *sk, u32 sent)
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct wavetcp *ca = inet_csk_ca(sk);
 
-	if (test_flag(FLAG_SAVE, &ca->flags) && sent > 0)
+	if (test_flag(FLAG_SAVE, &ca->flags))
 		clear_flag(FLAG_SAVE, &ca->flags);
 	else {
 		DBG("%u [wavetcp_segment_sent] Returning, no SAVE, sent %u\n",
@@ -710,8 +710,6 @@ static void wavetcp_segment_sent(struct sock *sk, u32 sent)
 
 	ca->delta_segments -= sent;
 
-	wavetcp_insert_burst(ca, sent);
-
 	if (ca->delta_segments >= 0 &&
 	    ca->burst > sent &&
 	    tcp_packets_in_flight(tp) <= tp->snd_cwnd) {
@@ -725,6 +723,10 @@ static void wavetcp_segment_sent(struct sock *sk, u32 sent)
 		DBG("%u [wavetcp_segment_sent] reducing cwnd by %u, value %u\n",
 		    tcp_time_stamp, ca->burst - sent, tp->snd_cwnd);
 	}
+
+	if (sent > 0)
+		wavetcp_insert_burst(ca, sent);
+
 }
 
 static void wavetcp_no_data(struct sock *sk)
