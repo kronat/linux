@@ -96,9 +96,6 @@ struct wavetcp {
 	char delta_segments;
 	/* The segments acked in the round */
 	u16 pkts_acked;
-	/* The number of samples to ignore at the beginning of the round. Set
-	 * if, for some reason, the TCP send segments out of the timer */
-	u8 rtt_samples_to_ignore;
 	/* Average ack train dispersion */
 	u32 avg_ack_train_disp;
 
@@ -156,7 +153,6 @@ static void wavetcp_init(struct sock *sk)
 	ca->first_rtt = 0;
 	ca->min_rtt = -1; /* a lot of time */
 	ca->avg_rtt = 0;
-	ca->rtt_samples_to_ignore = 0;
 	ca->max_rtt = 0;
 	ca->stab_factor = 0;
 	ca->avg_ack_train_disp = 0;
@@ -225,20 +221,10 @@ static void wavetcp_state(struct sock *sk, u8 new_state)
 	case TCP_CA_Open:
 		DBG("%u [wavetcp_state] set CA_Open\n", tcp_time_stamp);
 		/* We have fully recovered, so reset some variables */
-		ca->rtt_samples_to_ignore = 0;
 		ca->delta_segments = 0;
 		break;
-	case TCP_CA_Disorder:
-		DBG("%u [wavetcp_state] set CA_Disorder\n", tcp_time_stamp);
-		break;
-	case TCP_CA_Recovery:
-		DBG("%u [wavetcp_state] set CA_Recovery\n", tcp_time_stamp);
-		break;
-	case TCP_CA_Loss:
-		DBG("%u [wavetcp_state] set CA_Loss\n", tcp_time_stamp);
-		break;
 	default:
-		DBG("%u [wavetcp_state] set state %u\n",
+		DBG("%u [wavetcp_state] set state %u, ignored\n",
 		    tcp_time_stamp, new_state);
 	}
 }
@@ -284,36 +270,9 @@ static void wavetcp_cwnd_event(struct sock *sk, enum tcp_ca_event event)
 		set_flag(FLAG_START, &ca->flags);
 
 		break;
-	case CA_EVENT_CWND_RESTART:
-		/* congestion window restart */
-		DBG("%u [wavetcp_cwnd_event] CWND_RESTART\n", tcp_time_stamp);
-		break;
-	case CA_EVENT_COMPLETE_CWR:
-		/* end of congestion recovery */
-		DBG("%u [wavetcp_cwnd_event] COMPLETE_CWR\n", tcp_time_stamp);
-		break;
-	case CA_EVENT_LOSS:
-		/* loss timeout */
-		DBG("%u [wavetcp_cwnd_event] EVENT_LOSS\n", tcp_time_stamp);
-		break;
-	case CA_EVENT_ECN_NO_CE:
-		/* ECT set, but not CE marked */
-		DBG("%u [wavetcp_cwnd_event] ECN_NO_CE\n", tcp_time_stamp);
-		break;
-	case CA_EVENT_ECN_IS_CE:
-		/* received CE marked IP packet */
-		DBG("%u [wavetcp_cwnd_event] ECN_IS_CE\n", tcp_time_stamp);
-		break;
-	case CA_EVENT_DELAYED_ACK:
-		/* Delayed ack is sent */
-		DBG("%u [wavetcp_cwnd_event] DELAYED_ACK\n", tcp_time_stamp);
-		break;
-	case CA_EVENT_NON_DELAYED_ACK:
-		/* Non-delayed ack is sent */
-		DBG("%u [wavetcp_cwnd_event] NON_DELAYED_ACK\n", tcp_time_stamp);
-		break;
 	default:
-		DBG("%u [wavetcp_cwnd_event] default case\n", tcp_time_stamp);
+		DBG("%u [wavetcp_cwnd_event] got event %u, ignored\n",
+		    tcp_time_stamp, event);
 		break;
 	}
 }
@@ -565,17 +524,6 @@ static void wavetcp_acce(struct wavetcp *ca, s32 rtt_us, u32 pkts_acked)
 	}
 
 	if (ca->first_rtt == 0) {
-		/* If this is the first sample, take the RTT and remember the time.
-		* Small filtering: avoid to init the round if the rtt is very high.
-		* Added to avoid to begin the measurement after a tail loss probe, so
-		* probably it could be the case to add a test over the ca state. */
-		if (rtt_us > 3 * ca->avg_rtt && ca->rtt_samples_to_ignore > 0) {
-			DBG("%u [wavetcp_acce] Ignoring first rtt of %i\n",
-			    tcp_time_stamp, rtt_us);
-			ca->rtt_samples_to_ignore--;
-			return;
-		}
-
 		if (rtt_us > 0)
 			ca->first_rtt = rtt_us;
 		else
@@ -583,8 +531,6 @@ static void wavetcp_acce(struct wavetcp *ca, s32 rtt_us, u32 pkts_acked)
 			 * try to get the 2nd, the 3rd, ..., and only if they
 			 * are all 0 then use the avg? */
 			ca->first_rtt = ca->avg_rtt;
-
-		BUG_ON(ca->first_rtt < 0);
 
 		DBG("%u [wavetcp_acce] first measurement rtt %i\n",
 		    tcp_time_stamp, ca->first_rtt);
@@ -668,9 +614,13 @@ static void wavetcp_timer_expired(struct sock *sk)
 	BUG_ON(!test_flag(FLAG_INIT, &ca->flags));
 
 	if (!test_flag(FLAG_START, &ca->flags)) {
-		DBG("%u [wavetcp_timer_expired] returning because of !FLAG_START");
+		DBG("%u [wavetcp_timer_expired] returning because of !FLAG_START\n",
+		    tcp_time_stamp);
 		return;
 	}
+
+	DBG("%u [wavetcp_timer_expired] starting with delta %u\n",
+	    tcp_time_stamp, ca->delta_segments);
 
 	if (ca->delta_segments < 0) {
 		/* In the previous round, we sent more than the allowed burst,
@@ -678,7 +628,6 @@ static void wavetcp_timer_expired(struct sock *sk)
 		 */
 		BUG_ON(current_burst > ca->delta_segments);
 		current_burst += ca->delta_segments; /* please *reduce* */
-		ca->delta_segments = current_burst;
 
 		/* Right now, we should send "current_burst" segments out */
 
@@ -695,14 +644,9 @@ static void wavetcp_timer_expired(struct sock *sk)
 			    "segments sent out of window", tcp_time_stamp,
 			    diff);
 		}
-	} else if (ca->delta_segments > 0)
-		/* In the previous round, we didn't send the entire burst.
-		 * Probably some adjustment is needed. But for now nothing.
-		 */
-		ca->delta_segments = current_burst;
-	else
-		/* No delta segments, in the previous round we were good */
-		ca->delta_segments = current_burst;
+	}
+
+	ca->delta_segments = current_burst;
 
 	if (current_burst < min_burst) {
 		DBG("%u [wavetcp_timer_expired] WARNING !! not min_burst",
@@ -745,38 +689,16 @@ static unsigned long wavetcp_get_timer(struct sock *sk)
 	return usecs_to_jiffies(timer);
 }
 
-static u64 wavetcp_rate_bytes_per_sec(struct sock *sk)
-{
-	struct wavetcp *ca = inet_csk_ca(sk);
-	u64 rate;
-	u64 times_per_sec;
-	u16 timer = min_t(u16, ca->tx_timer, init_timer_ms * USEC_PER_MSEC);
-
-	BUG_ON(timer > USEC_PER_SEC);
-
-	times_per_sec = USEC_PER_SEC / timer;
-
-	rate = ca->burst;
-	rate *= times_per_sec;
-	rate *= tcp_mss_to_mtu(sk, tcp_sk(sk)->mss_cache);
-
-	DBG("%u [wavetcp_rate_bytes_per_sec] calculated a rate of %llu B/s\n",
-	    tcp_time_stamp, rate);
-
-	return rate;
-}
-
 static void wavetcp_segment_sent(struct sock *sk, u32 sent)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct wavetcp *ca = inet_csk_ca(sk);
-	u64 rate;
 
 	if (test_flag(FLAG_SAVE, &ca->flags) && sent > 0)
 		clear_flag(FLAG_SAVE, &ca->flags);
 	else {
-		DBG("%u [wavetcp_segment_sent] Returning, no SAVE\n",
-		    tcp_time_stamp);
+		DBG("%u [wavetcp_segment_sent] Returning, no SAVE, sent %u\n",
+		    tcp_time_stamp, sent);
 		return;
 	}
 
@@ -785,9 +707,6 @@ static void wavetcp_segment_sent(struct sock *sk, u32 sent)
 		    " cwnd %u\n, TSO very probable",
 		    tcp_time_stamp, sent, ca->burst, tp->snd_cwnd);
 	}
-
-	if (ca->delta_segments < sent)
-		ca->rtt_samples_to_ignore += sent;
 
 	ca->delta_segments -= sent;
 
@@ -806,11 +725,6 @@ static void wavetcp_segment_sent(struct sock *sk, u32 sent)
 		DBG("%u [wavetcp_segment_sent] reducing cwnd by %u, value %u\n",
 		    tcp_time_stamp, ca->burst - sent, tp->snd_cwnd);
 	}
-
-	rate = wavetcp_rate_bytes_per_sec(sk);
-
-	DBG("%u [wavetcp_segment_sent] sent %u delta %i rate %llu \n", tcp_time_stamp,
-	    sent, ca->delta_segments, rate);
 }
 
 static void wavetcp_no_data(struct sock *sk)
