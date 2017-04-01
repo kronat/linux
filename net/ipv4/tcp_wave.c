@@ -346,6 +346,9 @@ static u32 calculate_ack_train_disp(struct wavetcp *ca, const struct rate_sample
 			    tcp_time_stamp);
 			return 0;
 		}
+	} else {
+		DBG("%u [calculate_ack_train_disp] using measured ack_train_disp %u",
+		    tcp_time_stamp, ack_train_disp);
 	}
 
 	// Compute the average of the ack train dispersion
@@ -487,6 +490,14 @@ static void wavetcp_cong_control(struct sock *sk, const struct rate_sample *rs)
 		return;
 
 	while (ca->pkts_acked >= tmp->size) {
+		if (rs->delivered + 1 == tmp->size) {
+			DBG("%u [wavetcp_cong_control] highly experimental:"
+			    " ignore 1 pkt. pkts_acked %u, delivered %u,"
+			    " burst %u\n", tcp_time_stamp, ca->pkts_acked,
+			    rs->delivered, tmp->size);
+			ca->pkts_acked--;
+			return;
+		}
 		wavetcp_round_terminated(sk, rs, tmp->size);
 
 		BUG_ON(ca->pkts_acked < tmp->size);
@@ -666,7 +677,7 @@ static void wavetcp_timer_expired(struct sock *sk)
 	if (tp->snd_cwnd - tcp_packets_in_flight(tp) > current_burst) {
 		DBG("%u [wavetcp_timer_expired] OK. Something is wrong."
 		    " cwnd %u, in_flight %u, current burst %u\n",
-		    tcp_time_stamp, tp->snd_cwnd, tcp_packets_in_flight,
+		    tcp_time_stamp, tp->snd_cwnd, tcp_packets_in_flight(tp),
 		    current_burst);
 	}
 }
