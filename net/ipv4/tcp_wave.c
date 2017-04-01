@@ -264,7 +264,6 @@ static void wavetcp_insert_burst(struct wavetcp *ca, u32 burst)
 	cur = (struct wavetcp_burst_hist *)kmem_cache_alloc(ca->cache,
 							    GFP_KERNEL);
 	BUG_ON(!cur);
-	BUG_ON(burst > init_burst + 5);
 
 	cur->size = burst;
 	list_add_tail(&cur->list, &ca->history->list);
@@ -531,10 +530,9 @@ static void wavetcp_cong_control(struct sock *sk, const struct rate_sample *rs)
 	while (ca->pkts_acked >= tmp->size) {
 		wavetcp_round_terminated(sk, rs, tmp->size);
 
-		ca->pkts_acked -= tmp->size;
+		BUG_ON(ca->pkts_acked < tmp->size);
 
-		DBG("%u [wavetcp_cong_control] resetting RTT values for next round\n",
-		    tcp_time_stamp);
+		ca->pkts_acked -= tmp->size;
 
 		/* Delete the burst from the history */
 		list_del(pos);
@@ -669,8 +667,10 @@ static void wavetcp_timer_expired(struct sock *sk)
 
 	BUG_ON(!test_flag(FLAG_INIT, &ca->flags));
 
-	if (!test_flag(FLAG_START, &ca->flags))
+	if (!test_flag(FLAG_START, &ca->flags)) {
+		DBG("%u [wavetcp_timer_expired] returning because of !FLAG_START");
 		return;
+	}
 
 	if (ca->delta_segments < 0) {
 		/* In the previous round, we sent more than the allowed burst,
@@ -719,7 +719,12 @@ static void wavetcp_timer_expired(struct sock *sk)
 	    tcp_time_stamp, ca->burst, tp->snd_cwnd, ca->delta_segments,
 	    tcp_packets_in_flight(tp));
 
-	BUG_ON(tp->snd_cwnd - tcp_packets_in_flight(tp) > current_burst);
+	if (tp->snd_cwnd - tcp_packets_in_flight(tp) > current_burst) {
+		DBG("%u [wavetcp_timer_expired] OK. Something is wrong."
+		    " cwnd %u, in_flight %u, current burst %u\n",
+		    tcp_time_stamp, tp->snd_cwnd, tcp_packets_in_flight,
+		    current_burst);
+	}
 }
 
 /* The TCP is asking for a timer value in jiffies. This will be subject to
@@ -769,14 +774,16 @@ static void wavetcp_segment_sent(struct sock *sk, u32 sent)
 
 	if (test_flag(FLAG_SAVE, &ca->flags) && sent > 0)
 		clear_flag(FLAG_SAVE, &ca->flags);
-	else
+	else {
+		DBG("%u [wavetcp_segment_sent] Returning, no SAVE\n",
+		    tcp_time_stamp);
 		return;
+	}
 
 	if (sent > ca->burst) {
 		DBG("%u [wavetcp_segment_sent] BIG Error! sent %u, burst %u"
 		    " cwnd %u\n, TSO very probable",
 		    tcp_time_stamp, sent, ca->burst, tp->snd_cwnd);
-		BUG_ON(sent > ca->burst);
 	}
 
 	if (ca->delta_segments < sent)
