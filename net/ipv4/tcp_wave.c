@@ -88,14 +88,14 @@ static __always_inline void clear_flag(u8 value, u8 *flags)
 struct wavetcp {
 	/* The module flags */
 	u8 flags;
-	/* The current transmission timer (ms) */
-	u16 tx_timer;
+	/* The current transmission timer (us) */
+	u32 tx_timer;
 	/* The current burst size (segments) */
 	u16 burst;
 	/* Represents a delta from the burst size of segments sent */
 	char delta_segments;
 	/* The segments acked in the round */
-	u32 pkts_acked;
+	u16 pkts_acked;
 	/* The number of samples to ignore at the beginning of the round. Set
 	 * if, for some reason, the TCP send segments out of the timer */
 	u8 rtt_samples_to_ignore;
@@ -728,13 +728,13 @@ static void wavetcp_timer_expired(struct sock *sk)
 static unsigned long wavetcp_get_timer(struct sock *sk)
 {
 	struct wavetcp *ca = inet_csk_ca(sk);
-	u16 timer;
+	u32 timer;
 
 	BUG_ON(!test_flag(FLAG_INIT, &ca->flags));
 
 	timer = min_t(unsigned long, ca->tx_timer, init_timer_ms * USEC_PER_MSEC);
 
-	DBG("%u [wavetcp_get_timer] returning timer of %u ms\n", tcp_time_stamp,
+	DBG("%u [wavetcp_get_timer] returning timer of %u us\n", tcp_time_stamp,
 	    timer);
 
 	return usecs_to_jiffies(timer);
