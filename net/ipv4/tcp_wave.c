@@ -365,17 +365,18 @@ static __always_inline unsigned long wavetcp_compute_weight(unsigned long first_
 	return diff / first_rtt;
 }
 
-static u32 calculate_ack_train_disp(struct wavetcp *ca, u64 bw, u32 burst)
+static u32 calculate_ack_train_disp(struct wavetcp *ca, const struct rate_sample *rs,
+				    u32 burst)
 {
 	u32 ack_train_disp = jiffies_to_usecs(tcp_time_stamp - ca->first_ack_time);
 
 	if (ack_train_disp == 0) {
 		/* We received a cumulative ACK just after we sent the data, so
-		 * the dispersion would be close to zero. Just use the Linux
-		 * value in this case, or the average */
-		if (bw > 0) {
-			ack_train_disp = bw;
-			do_div(ack_train_disp, burst);
+		 * the dispersion would be close to zero, OR the connection
+		 * is so fast that tcp_time_stamp is not good enough to measure
+		 * time. */
+		if (rs->delivered == burst && rs->interval_us > 0) {
+			ack_train_disp = rs->interval_us;
 			DBG("%u [calculate_ack_train_disp] ack_train_disp from linux %u\n",
 			    tcp_time_stamp, ack_train_disp);
 		} else if (ca->avg_ack_train_disp > 0) {
@@ -387,17 +388,19 @@ static u32 calculate_ack_train_disp(struct wavetcp *ca, u64 bw, u32 burst)
 			    tcp_time_stamp);
 			return 0;
 		}
-	} else {
-		if (ca->avg_ack_train_disp == 0) {
-			DBG("%u [calculate_ack_train_disp] avg_ack_train_disp is 0, setting ours: %i\n",
-			    tcp_time_stamp, ack_train_disp);
-			ca->avg_ack_train_disp = ack_train_disp;
-		} else {
-			ca->avg_ack_train_disp = (ca->avg_ack_train_disp / 2) + (ack_train_disp / 2);
-			DBG("%u [calculate_ack_train_disp] avg_ack_train_disp updated, result %u\n",
-			    tcp_time_stamp, ca->avg_ack_train_disp);
-		}
 	}
+
+	// Compute the average of the ack train dispersion
+	if (ca->avg_ack_train_disp == 0) {
+		DBG("%u [calculate_ack_train_disp] avg_ack_train_disp is 0, setting ours: %i\n",
+		    tcp_time_stamp, ack_train_disp);
+		ca->avg_ack_train_disp = ack_train_disp;
+	} else {
+		ca->avg_ack_train_disp = (ca->avg_ack_train_disp / 2) + (ack_train_disp / 2);
+		DBG("%u [calculate_ack_train_disp] avg_ack_train_disp updated, result %u\n",
+		    tcp_time_stamp, ca->avg_ack_train_disp);
+	}
+
 	return ack_train_disp;
 }
 
@@ -458,19 +461,13 @@ static void wavetcp_round_terminated(struct sock *sk, const struct rate_sample *
 	u64 bw = 0;
 	struct wavetcp *ca = inet_csk_ca(sk);
 
-	if (rs->delivered > 0) {
-		bw = (u64)rs->delivered * BW_UNIT;
-		do_div(bw, rs->interval_us);
-		bw /= BW_UNIT;
-	}
-
 	DBG("%u [wavetcp_round_terminated] reached the burst size %u, linux bw %llu\n",
 	    tcp_time_stamp, burst, bw);
 
 	BUG_ON(time_after((unsigned long)ca->first_ack_time,
 			  (unsigned long)tcp_time_stamp));
 
-	ack_train_disp = calculate_ack_train_disp(ca, bw, burst);
+	ack_train_disp = calculate_ack_train_disp(ca, rs, burst);
 	if (ack_train_disp == 0) {
 		DBG("%u [wavetcp_round_terminated] without ack_train_disp, returning\n",
 		    tcp_time_stamp);
