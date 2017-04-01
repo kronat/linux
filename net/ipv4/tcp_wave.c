@@ -458,11 +458,10 @@ static void wavetcp_round_terminated(struct sock *sk, const struct rate_sample *
 {
 	u64 delta_rtt;
 	u32 ack_train_disp;
-	u64 bw = 0;
 	struct wavetcp *ca = inet_csk_ca(sk);
 
-	DBG("%u [wavetcp_round_terminated] reached the burst size %u, linux bw %llu\n",
-	    tcp_time_stamp, burst, bw);
+	DBG("%u [wavetcp_round_terminated] reached the burst size %u\n",
+	    tcp_time_stamp, burst);
 
 	BUG_ON(time_after((unsigned long)ca->first_ack_time,
 			  (unsigned long)tcp_time_stamp));
@@ -721,7 +720,6 @@ static void wavetcp_timer_expired(struct sock *sk)
 	    tcp_packets_in_flight(tp));
 
 	BUG_ON(tp->snd_cwnd - tcp_packets_in_flight(tp) > current_burst);
-
 }
 
 /* The TCP is asking for a timer value in jiffies. This will be subject to
@@ -769,6 +767,11 @@ static void wavetcp_segment_sent(struct sock *sk, u32 sent)
 	struct wavetcp *ca = inet_csk_ca(sk);
 	u64 rate;
 
+	if (test_flag(FLAG_SAVE, &ca->flags) && sent > 0)
+		clear_flag(FLAG_SAVE, &ca->flags);
+	else
+		return;
+
 	if (sent > ca->burst) {
 		DBG("%u [wavetcp_segment_sent] BIG Error! sent %u, burst %u"
 		    " cwnd %u\n, TSO very probable",
@@ -781,10 +784,7 @@ static void wavetcp_segment_sent(struct sock *sk, u32 sent)
 
 	ca->delta_segments -= sent;
 
-	if (test_flag(FLAG_SAVE, &ca->flags) && sent > 0)
-		wavetcp_insert_burst(ca, sent);
-
-	clear_flag(FLAG_SAVE, &ca->flags);
+	wavetcp_insert_burst(ca, sent);
 
 	if (ca->delta_segments >= 0 &&
 	    ca->burst > sent &&
