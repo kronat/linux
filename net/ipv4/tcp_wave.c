@@ -101,6 +101,9 @@ struct wavetcp {
 
 	/* First ACK time of the round */
 	u32 first_ack_time;
+	/* Backup value of the first ack time,
+	 * taken with interval_us variable */
+	u32 backup_first_ack_time;
 	/* First RTT of the round */
 	u32 first_rtt;
 	/* Minimum RTT of the round */
@@ -150,6 +153,7 @@ static void wavetcp_init(struct sock *sk)
 	ca->delta_segments = init_burst;
 	ca->tx_timer = init_timer_ms * USEC_PER_MSEC;
 	ca->first_ack_time = 0;
+	ca->backup_first_ack_time = 0;
 	ca->first_rtt = 0;
 	ca->min_rtt = -1; /* a lot of time */
 	ca->avg_rtt = 0;
@@ -326,6 +330,7 @@ static __always_inline unsigned long wavetcp_compute_weight(unsigned long first_
 static u32 calculate_ack_train_disp(struct wavetcp *ca, const struct rate_sample *rs,
 				    u32 burst)
 {
+	u32 backup_interval = 0;
 	u32 ack_train_disp = jiffies_to_usecs(tcp_time_stamp - ca->first_ack_time);
 
 	if (ack_train_disp == 0) {
@@ -334,9 +339,11 @@ static u32 calculate_ack_train_disp(struct wavetcp *ca, const struct rate_sample
 		 * is so fast that tcp_time_stamp is not good enough to measure
 		 * time. */
 		if (rs->delivered == burst && rs->interval_us > 0) {
+			backup_interval = rs->interval_us - ca->backup_first_ack_time;
 			ack_train_disp = rs->interval_us;
-			DBG("%u [calculate_ack_train_disp] ack_train_disp from linux %u\n",
-			    tcp_time_stamp, ack_train_disp);
+			DBG("%u [calculate_ack_train_disp] ack_train_disp from linux, interval is %lu, "
+			    " first interval - last interval is %u\n",
+			    tcp_time_stamp, rs->interval_us, backup_interval);
 		} else if (ca->avg_ack_train_disp > 0) {
 			DBG("%u [calculate_ack_train_disp] ack_train_disp from avg %u\n",
 			    tcp_time_stamp, ca->avg_ack_train_disp);
@@ -462,6 +469,9 @@ static void wavetcp_cong_control(struct sock *sk, const struct rate_sample *rs)
 	if (!test_flag(FLAG_INIT, &ca->flags))
 		return;
 
+	if (ca->backup_first_ack_time == 0 && rs->interval_us > 0)
+		ca->backup_first_ack_time = rs->interval_us;
+
 	pos = ca->history->list.next;
 	tmp = list_entry(pos, struct wavetcp_burst_hist, list);
 
@@ -490,6 +500,12 @@ static void wavetcp_cong_control(struct sock *sk, const struct rate_sample *rs)
 		return;
 
 	while (ca->pkts_acked >= tmp->size) {
+		/* Usually the burst end is also reflected in the rs->delivered
+		 * variable. If this is not the case, and such variable is
+		 * behind just for 1 segment, then do this experimental thing
+		 * to re-allineate the burst with the rs->delivered variable.
+		 * In the majority of cases, we went out of allineation because
+		 * of a tail loss probe. */
 		if (rs->delivered + 1 == tmp->size) {
 			DBG("%u [wavetcp_cong_control] highly experimental:"
 			    " ignore 1 pkt. pkts_acked %u, delivered %u,"
@@ -516,11 +532,13 @@ static void wavetcp_cong_control(struct sock *sk, const struct rate_sample *rs)
 		 * Linux path instead of the wave path.. first_rtt will not be
 		 * read, so don't waste a cycle to set it */
 		ca->first_ack_time = tcp_time_stamp;
+		ca->backup_first_ack_time = 0;
 	}
 
 reset:
 	/* Reset the variables needed for the beginning of the next round*/
 	ca->first_ack_time = 0;
+	ca->backup_first_ack_time = 0;
 	ca->first_rtt = 0;
 	DBG("%u [wavetcp_cong_control] resetting RTT values for next round\n",
 	    tcp_time_stamp);
