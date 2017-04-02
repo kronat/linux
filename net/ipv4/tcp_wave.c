@@ -705,12 +705,12 @@ static void wavetcp_segment_sent(struct sock *sk, u32 sent)
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct wavetcp *ca = inet_csk_ca(sk);
 
-	if (test_flag(FLAG_SAVE, &ca->flags) && sent > 0)
+	if (test_flag(FLAG_SAVE, &ca->flags) && sent > 0) {
+		wavetcp_insert_burst(ca, sent);
 		clear_flag(FLAG_SAVE, &ca->flags);
-	else {
-		DBG("%u [wavetcp_segment_sent] Returning, no SAVE, sent %u\n",
+	} else {
+		DBG("%u [wavetcp_segment_sent] not saving burst, sent %u\n",
 		    tcp_time_stamp, sent);
-		return;
 	}
 
 	if (sent > ca->burst) {
@@ -720,8 +720,6 @@ static void wavetcp_segment_sent(struct sock *sk, u32 sent)
 	}
 
 	ca->delta_segments -= sent;
-
-	wavetcp_insert_burst(ca, sent);
 
 	if (ca->delta_segments >= 0 &&
 	    ca->burst > sent &&
