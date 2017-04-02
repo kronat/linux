@@ -100,7 +100,7 @@ struct wavetcp {
 	u32 avg_ack_train_disp;
 
 	/* First ACK time of the round */
-	u64 first_ack_time;
+	u32 first_ack_time;
 	/* First RTT of the round */
 	u32 first_rtt;
 	/* Minimum RTT of the round */
@@ -326,7 +326,7 @@ static __always_inline unsigned long wavetcp_compute_weight(unsigned long first_
 static u32 calculate_ack_train_disp(struct wavetcp *ca, const struct rate_sample *rs,
 				    u32 burst)
 {
-	u32 ack_train_disp = jiffies_to_usecs(jiffies - ca->first_ack_time);
+	u32 ack_train_disp = jiffies_to_usecs(tcp_time_stamp - ca->first_ack_time);
 
 	if (ack_train_disp == 0) {
 		/* We received a cumulative ACK just after we sent the data, so
@@ -515,7 +515,7 @@ static void wavetcp_cong_control(struct sock *sk, const struct rate_sample *rs)
 		/* If we cycle, inside wavetcp_round_terminated we will take the
 		 * Linux path instead of the wave path.. first_rtt will not be
 		 * read, so don't waste a cycle to set it */
-		ca->first_ack_time = jiffies;
+		ca->first_ack_time = tcp_time_stamp;
 	}
 
 reset:
@@ -529,7 +529,7 @@ reset:
 static void wavetcp_acce(struct wavetcp *ca, s32 rtt_us, u32 pkts_acked)
 {
 	if (ca->first_ack_time == 0) {
-		ca->first_ack_time = jiffies;
+		ca->first_ack_time = tcp_time_stamp;
 		DBG("%u [wavetcp_acce] first ack of the train\n",
 		    tcp_time_stamp);
 	}
