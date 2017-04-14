@@ -98,7 +98,8 @@ struct wavetcp {
 	u16 pkts_acked;
 	/* Average ack train dispersion */
 	u32 avg_ack_train_disp;
-
+	/* Heuristic scale, to divide the RTT */
+	u8 heuristic_scale;
 	/* First ACK time of the round */
 	u32 first_ack_time;
 	/* Backup value of the first ack time,
@@ -154,6 +155,7 @@ static void wavetcp_init(struct sock *sk)
 	ca->tx_timer = init_timer_ms * USEC_PER_MSEC;
 	ca->first_ack_time = 0;
 	ca->backup_first_ack_time = 0;
+	ca->heuristic_scale = 0;
 	ca->first_rtt = 0;
 	ca->min_rtt = -1; /* a lot of time */
 	ca->avg_rtt = 0;
@@ -302,12 +304,13 @@ static __always_inline void wavetcp_tracking_mode(struct wavetcp *ca,
 	ca->tx_timer = (ack_train_disp + (delta_rtt / 2));
 
 	if (ca->tx_timer == 0) {
-		DBG("%u [wavetcp_tracking_mode] increasing tx timer to 1000 us",
+		DBG("%u [wavetcp_tracking_mode] WARNING: tx timer is 0"
+		    ", forcefully set it to 1000 us\n",
 		    tcp_time_stamp);
 		ca->tx_timer = 1000;
 	}
 
-	DBG("%u [wavetcp_tracking_mode] tx timer is %u us", tcp_time_stamp,
+	DBG("%u [wavetcp_tracking_mode] tx timer is %u us\n", tcp_time_stamp,
 	    ca->tx_timer);
 }
 
@@ -340,25 +343,43 @@ static u32 calculate_ack_train_disp(struct wavetcp *ca, const struct rate_sample
 		 * time. */
 		if (rs->delivered == burst && rs->interval_us > 0) {
 			backup_interval = rs->interval_us - ca->backup_first_ack_time;
-			ack_train_disp = rs->interval_us;
-			DBG("%u [calculate_ack_train_disp] ack_train_disp from linux, interval is %lu, "
-			    " first interval - last interval is %u\n",
-			    tcp_time_stamp, rs->interval_us, backup_interval);
+			if (backup_interval == 0) {
+				ack_train_disp = rs->interval_us << ca->heuristic_scale;
+				DBG("%u [calculate_ack_train_disp] we received one BIG ack."
+				    " Doing an heuristic with scale %u, interval_us"
+				    " %li us, and setting ack_train_disp to %u us\n",
+				    tcp_time_stamp, ca->heuristic_scale, rs->interval_us,
+				    ack_train_disp);
+			} else {
+				ack_train_disp = backup_interval;
+				DBG("%u [calculate_ack_train_disp] we got the first ack with"
+				    " interval %u us, the last (this) with interval %li us."
+				    " Doing a substraction and setting ack_train_disp"
+				    " to %u us\n",
+				    tcp_time_stamp, ca->backup_first_ack_time,
+				    rs->interval_us, ack_train_disp);
+			}
 		} else if (ca->avg_ack_train_disp > 0) {
 			DBG("%u [calculate_ack_train_disp] ack_train_disp from avg %u\n",
 			    tcp_time_stamp, ca->avg_ack_train_disp);
 			ack_train_disp = ca->avg_ack_train_disp;
 		} else {
-			DBG("%u [calculate_ack_train_disp] is not possible to calculate ack_train_disp\n",
+			DBG("%u [calculate_ack_train_disp] WARNING is not possible "
+			    "to calculate ack_train_disp, returning 0\n",
 			    tcp_time_stamp);
-			return 0;
 		}
+
+		/* Don't put this crafted value in the calculation of the average */
+		return ack_train_disp;
 	} else {
 		DBG("%u [calculate_ack_train_disp] using measured ack_train_disp %u",
 		    tcp_time_stamp, ack_train_disp);
+
+		/* resetting the heuristic scale because we have a real sample*/
+		ca->heuristic_scale = 0;
 	}
 
-	// Compute the average of the ack train dispersion
+	/* Compute the average of the real ack train dispersion values */
 	if (ca->avg_ack_train_disp == 0) {
 		DBG("%u [calculate_ack_train_disp] avg_ack_train_disp is 0, setting ours: %i\n",
 		    tcp_time_stamp, ack_train_disp);
@@ -693,7 +714,7 @@ static void wavetcp_timer_expired(struct sock *sk)
 	    tcp_packets_in_flight(tp));
 
 	if (tp->snd_cwnd - tcp_packets_in_flight(tp) > current_burst) {
-		DBG("%u [wavetcp_timer_expired] OK. Something is wrong."
+		DBG("%u [wavetcp_timer_expired] WARNING! "
 		    " cwnd %u, in_flight %u, current burst %u\n",
 		    tcp_time_stamp, tp->snd_cwnd, tcp_packets_in_flight(tp),
 		    current_burst);
@@ -732,7 +753,7 @@ static void wavetcp_segment_sent(struct sock *sk, u32 sent)
 	}
 
 	if (sent > ca->burst) {
-		DBG("%u [wavetcp_segment_sent] BIG Error! sent %u, burst %u"
+		DBG("%u [wavetcp_segment_sent] WARNING! sent %u, burst %u"
 		    " cwnd %u\n, TSO very probable",
 		    tcp_time_stamp, sent, ca->burst, tp->snd_cwnd);
 	}
