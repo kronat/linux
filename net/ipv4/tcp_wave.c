@@ -396,6 +396,12 @@ static u32 calculate_ack_train_disp(struct wavetcp *ca, const struct rate_sample
 
 static u64 calculate_delta_rtt(struct wavetcp *ca)
 {
+	if (ca->first_rtt == 0) {
+		ca->first_rtt = ca->avg_rtt;
+		DBG("%u [calculate_delta_rtt] It was impossible to get any rtt "
+		    "in the train. Using the average value %u\n",
+		    tcp_time_stamp, ca->first_rtt);
+	}
 	/* Why the first if?
 	 *
 	 * a = (first_rtt - min_rtt) / first_rtt = 1 - (min_rtt/first_rtt)
@@ -420,7 +426,7 @@ static u64 calculate_delta_rtt(struct wavetcp *ca)
 	 */
 	if (ca->avg_rtt == 0)
 		ca->avg_rtt = ca->min_rtt;
-	else {
+	else if (ca->first_rtt > 0) {
 		unsigned long a;
 		unsigned long left;
 		unsigned long right;
@@ -434,6 +440,10 @@ static u64 calculate_delta_rtt(struct wavetcp *ca)
 		right = ((AVG_UNIT - a) * ca->first_rtt) / AVG_UNIT;
 
 		ca->avg_rtt = left + right;
+	} else {
+		DBG("%u [calculate_delta_rtt] first_rtt is 0. It is impossible "
+		    "to calculate the average RTT. Using the old value.\n",
+		    tcp_time_stamp);
 	}
 
 	DBG("%u [calculate_delta_rtt] final avg %u\n",
@@ -574,14 +584,8 @@ static void wavetcp_acce(struct wavetcp *ca, s32 rtt_us, u32 pkts_acked)
 		    tcp_time_stamp);
 	}
 
-	if (ca->first_rtt == 0) {
-		if (rtt_us > 0)
-			ca->first_rtt = rtt_us;
-		else
-			/* We don't have the first RTT of the burst. TODO: Maybe
-			 * try to get the 2nd, the 3rd, ..., and only if they
-			 * are all 0 then use the avg? */
-			ca->first_rtt = ca->avg_rtt;
+	if (ca->first_rtt == 0 && rtt_us > 0) {
+		ca->first_rtt = rtt_us;
 
 		DBG("%u [wavetcp_acce] first measurement rtt %i\n",
 		    tcp_time_stamp, ca->first_rtt);
