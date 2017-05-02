@@ -586,7 +586,7 @@ static void wavetcp_acce(struct wavetcp *ca, s32 rtt_us, u32 pkts_acked)
 		    tcp_time_stamp, ca->first_rtt);
 	}
 
-	if (rtt_us < 0)
+	if (rtt_us <= 0)
 		return;
 
 	/* Check the minimum rtt we have seen */
