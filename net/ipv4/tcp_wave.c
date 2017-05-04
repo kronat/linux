@@ -344,7 +344,7 @@ static u32 calculate_ack_train_disp(struct wavetcp *ca, const struct rate_sample
 		if (rs->delivered == burst && rs->interval_us > 0) {
 			backup_interval = rs->interval_us - ca->backup_first_ack_time;
 			if (backup_interval == 0) {
-				ack_train_disp = rs->interval_us << ca->heuristic_scale;
+				ack_train_disp = rs->interval_us >> ca->heuristic_scale;
 				++ca->heuristic_scale;
 				DBG("%u [calculate_ack_train_disp] we received one BIG ack."
 				    " Doing an heuristic with scale %u, interval_us"
