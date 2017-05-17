@@ -289,7 +289,7 @@ static __always_inline void wavetcp_adj_mode(struct wavetcp *ca,
 {
 	ca->stab_factor = ca->avg_rtt / ack_train_disp;
 
-	ca->min_rtt = 0;
+	ca->min_rtt = -1; /* a lot of time */
 	ca->avg_rtt = ca->max_rtt;
 	ca->tx_timer = init_timer_ms * USEC_PER_MSEC;
 
