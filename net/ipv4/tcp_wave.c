@@ -510,7 +510,7 @@ static void wavetcp_cong_control(struct sock *sk, const struct rate_sample *rs)
 	if (tmp->size == 0) {
 		/* No burst in memory. Most likely we sent some segments out of
 		 * the allowed window (e.g., loss probe) */
-		DBG("%u [wavetcp_acce] WARNING! empty burst\n", tcp_time_stamp);
+		DBG("%u [wavetcp_cong_control] WARNING! empty burst\n", tcp_time_stamp);
 		wavetcp_print_history(ca);
 		goto reset;
 	}
@@ -617,7 +617,6 @@ static void wavetcp_acked(struct sock *sk, const struct ack_sample *sample)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct wavetcp *ca = inet_csk_ca(sk);
-	s32 rtt_us;
 
 	if (!test_flag(FLAG_INIT, &ca->flags))
 		return;
@@ -627,19 +626,12 @@ static void wavetcp_acked(struct sock *sk, const struct ack_sample *sample)
 	    tcp_time_stamp, sample->pkts_acked, sample->rtt_us,
 	    sample->in_flight, tp->snd_cwnd, tp->rtt_seq);
 
-	/* More than 2 is probably a cumulative ACK after a retransmit phase.
-	 * Use the average RTT */
-	if (sample->pkts_acked > 2)
-		rtt_us = (s32)ca->avg_rtt;
-	else
-		rtt_us = sample->rtt_us;
-
 	/* We can divide the ACCE function in two part: the first take care of
 	 * the RTT, and the second of the train management. Here we could have
 	 * pkts_acked == 0, but with RTT values (because the underlying TCP can
 	 * identify what segment has been ACKed through the SACK option). In any
 	 * case, therefore, we enter wavetcp_acce.*/
-	wavetcp_acce(ca, rtt_us, sample->pkts_acked);
+	wavetcp_acce(ca, sample->rtt_us, sample->pkts_acked);
 
 	if (tp->snd_cwnd < sample->pkts_acked)
 		/* We sent some scattered segments, so the burst segments and
