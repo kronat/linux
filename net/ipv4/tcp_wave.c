@@ -466,6 +466,10 @@ static void wavetcp_round_terminated(struct sock *sk, const struct rate_sample *
 	BUG_ON(time_after((unsigned long)ca->first_ack_time,
 			  (unsigned long)tcp_time_stamp));
 
+	delta_rtt = calculate_delta_rtt(ca);
+	DBG("%u [wavetcp_round_terminated] delta rtt %llu us\n",
+	    tcp_time_stamp, delta_rtt);
+
 	ack_train_disp = calculate_ack_train_disp(ca, rs, burst);
 	if (ack_train_disp == 0) {
 		DBG("%u [wavetcp_round_terminated] without ack_train_disp, returning\n",
@@ -473,9 +477,7 @@ static void wavetcp_round_terminated(struct sock *sk, const struct rate_sample *
 		return;
 	}
 
-	delta_rtt = calculate_delta_rtt(ca);
-
-	DBG("%u [wavetcp_round_terminated] done. ack_train_disp %u us delta_rtt %llu us "
+	DBG("%u [wavetcp_round_terminated] ack_train_disp %u us "
 	    "sf %u\n", tcp_time_stamp, ack_train_disp, delta_rtt, ca->stab_factor);
 
 	if (ca->stab_factor > 0) {
