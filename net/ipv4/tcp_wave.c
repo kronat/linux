@@ -484,8 +484,8 @@ static void wavetcp_round_terminated(struct sock *sk, const struct rate_sample *
 		return;
 	}
 
-	DBG("%u [wavetcp_round_terminated] ack_train_disp %u us "
-	    "sf %u\n", tcp_time_stamp, ack_train_disp, delta_rtt, ca->stab_factor);
+	DBG("%u [wavetcp_round_terminated] ack_train_disp %u us, drtt %llu, sf %u\n",
+	    tcp_time_stamp, ack_train_disp, delta_rtt, ca->stab_factor);
 
 	if (ca->stab_factor > 0) {
 		--ca->stab_factor;
@@ -633,7 +633,7 @@ static void wavetcp_acked(struct sock *sk, const struct ack_sample *sample)
 	DBG("%u [wavetcp_acked] pkts_acked %u, rtt_us %i, in_flight %u "
 	    ", cwnd %u, seq ack %u\n",
 	    tcp_time_stamp, sample->pkts_acked, sample->rtt_us,
-	    sample->in_flight, tp->snd_cwnd, tp->rtt_seq);
+	    sample->in_flight, tp->snd_cwnd, tp->snd_una);
 
 	/* We can divide the ACCE function in two part: the first take care of
 	 * the RTT, and the second of the train management. Here we could have
