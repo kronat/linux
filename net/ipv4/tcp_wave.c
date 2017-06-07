@@ -342,7 +342,14 @@ static u32 calculate_ack_train_disp(struct wavetcp *ca, const struct rate_sample
 		 * is so fast that tcp_time_stamp is not good enough to measure
 		 * time. */
 		if (rs->delivered == burst && rs->interval_us > 0) {
-			backup_interval = rs->interval_us - ca->backup_first_ack_time;
+			/* the else branch avoids an overflow. However, reaching
+			 * that branch means that the ACK train is not aligned
+			 * with the sent burst */
+			if (rs->interval_us >= ca->backup_first_ack_time)
+				backup_interval = rs->interval_us - ca->backup_first_ack_time;
+			else
+				backup_interval = ca->backup_first_ack_time - rs->interval_us;
+
 			if (backup_interval == 0) {
 				ack_train_disp = rs->interval_us >> ca->heuristic_scale;
 				++ca->heuristic_scale;
