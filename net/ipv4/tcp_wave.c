@@ -116,7 +116,7 @@ struct wavetcp {
 	/* Stability factor */
 	u8 stab_factor;
 	/* Previous ack_train_disp Value */
-	u32 backup_ack_train_disp;
+	u32 previous_ack_train_disp;
 
 	/* The memory cache for saving the burst sizes */
 	struct kmem_cache *cache;
@@ -164,7 +164,7 @@ static void wavetcp_init(struct sock *sk)
 	ca->max_rtt = 0;
 	ca->stab_factor = 0;
 	ca->avg_ack_train_disp = 0;
-	ca->backup_ack_train_disp = 0;
+	ca->previous_ack_train_disp = 0;
 
 	ca->history = kmalloc(sizeof(struct wavetcp_burst_hist), GFP_KERNEL);
 
@@ -479,6 +479,19 @@ static void wavetcp_round_terminated(struct sock *sk, const struct rate_sample *
 		    tcp_time_stamp);
 		return;
 	}
+	else if (ack_train_disp > ca->previous_ack_train_disp && ca->previous_ack_train_disp != 0) 
+	{
+		unsigned long alfa;
+		unsigned long left;
+		unsigned long right;
+			alfa = (delta_rtt * AVG_UNIT) / (beta_ms * 1000);
+			left = ((AVG_UNIT - alfa) * ca->previous_ack_train_disp) / AVG_UNIT;
+			right = (alfa * ack_train_disp) / AVG_UNIT;
+		DBG("%u [wavetcp_round_terminated] use previous ack_train_disp %u us, alfa %lu to filter a received ack_train_disp %u us\n", 
+			tcp_time_stamp, ca->previous_ack_train_disp, alfa, ack_train_disp);	
+				ack_train_disp = left + right;
+	}
+	ca->previous_ack_train_disp = ack_train_disp; 
 
 	DBG("%u [wavetcp_round_terminated] ack_train_disp %u us "
 	    "sf %u\n", tcp_time_stamp, ack_train_disp, delta_rtt, ca->stab_factor);
@@ -488,24 +501,7 @@ static void wavetcp_round_terminated(struct sock *sk, const struct rate_sample *
 		DBG("%u [wavetcp_round_terminated] avoiding update for stability reasons\n",
 		    tcp_time_stamp);
 		return;
-	} else if (ca->backup_ack_train_disp == 0) { 
-	ca->backup_ack_train_disp = ack_train_disp;
-	} else if (ack_train_disp < ca->backup_ack_train_disp) {
-	ca->backup_ack_train_disp = ack_train_disp;
-	} else if (ack_train_disp > ca->backup_ack_train_disp) {
-		unsigned long alfa;
-		unsigned long left;
-		unsigned long right;
-			alfa = (delta_rtt * AVG_UNIT) / (beta_ms * 1000);
-			left = ((AVG_UNIT - alfa) * ca->backup_ack_train_disp) / AVG_UNIT;
-			right = (alfa * ack_train_disp) / AVG_UNIT;
-		DBG("%u [wavetcp_round_terminated] use previous ack_train_disp %u us, alfa %lu to filter a received ack_train_disp %u us\n", 
-			tcp_time_stamp, ca->backup_ack_train_disp, alfa, ack_train_disp);	
-				ack_train_disp = left + right;
-	}
-	DBG("%u [wavetcp_round_terminated] final ack_train_disp %u us "
-	    "sf %u\n", tcp_time_stamp, ack_train_disp, delta_rtt, ca->stab_factor);
-	
+	} 
 	/* delta_rtt is in us, beta_ms in ms */
 	if (delta_rtt > beta_ms * 1000)
 		wavetcp_adj_mode(ca, ack_train_disp, delta_rtt);
