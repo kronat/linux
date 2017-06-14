@@ -515,6 +515,16 @@ static void wavetcp_round_terminated(struct sock *sk, const struct rate_sample *
 	    tcp_time_stamp, delta_rtt);
 
 	ack_train_disp = calculate_ack_train_disp(ca, rs, burst, delta_rtt);
+
+	/* If we have to wait, let's wait */
+	if (ca->stab_factor > 0) {
+		--ca->stab_factor;
+		DBG("%u [wavetcp_round_terminated] avoiding update for stability reasons\n",
+		    tcp_time_stamp);
+		return;
+	}
+
+	/* If we should not wait, but we have no valid sample, nothing happens */
 	if (ack_train_disp == 0) {
 		DBG("%u [wavetcp_round_terminated] without ack_train_disp, returning\n",
 		    tcp_time_stamp);
@@ -523,13 +533,6 @@ static void wavetcp_round_terminated(struct sock *sk, const struct rate_sample *
 
 	DBG("%u [wavetcp_round_terminated] ack_train_disp %u us, drtt %llu, sf %u\n",
 	    tcp_time_stamp, ack_train_disp, delta_rtt, ca->stab_factor);
-
-	if (ca->stab_factor > 0) {
-		--ca->stab_factor;
-		DBG("%u [wavetcp_round_terminated] avoiding update for stability reasons\n",
-		    tcp_time_stamp);
-		return;
-	}
 
 	/* delta_rtt is in us, beta_ms in ms */
 	if (delta_rtt > beta_ms * 1000)
