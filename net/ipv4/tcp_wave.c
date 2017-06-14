@@ -96,10 +96,10 @@ struct wavetcp {
 	char delta_segments;
 	/* The segments acked in the round */
 	u16 pkts_acked;
-	/* Average ack train dispersion */
-	u32 avg_ack_train_disp;
 	/* Heuristic scale, to divide the RTT */
 	u8 heuristic_scale;
+	/* Previous ack_train_disp Value */
+	u32 previous_ack_train_disp;
 	/* First ACK time of the round */
 	u32 first_ack_time;
 	/* Backup value of the first ack time,
@@ -115,7 +115,6 @@ struct wavetcp {
 	u32 max_rtt;
 	/* Stability factor */
 	u8 stab_factor;
-
 	/* The memory cache for saving the burst sizes */
 	struct kmem_cache *cache;
 	/* The burst history */
@@ -161,7 +160,7 @@ static void wavetcp_init(struct sock *sk)
 	ca->avg_rtt = 0;
 	ca->max_rtt = 0;
 	ca->stab_factor = 0;
-	ca->avg_ack_train_disp = 0;
+	ca->previous_ack_train_disp = 0;
 
 	ca->history = kmalloc(sizeof(struct wavetcp_burst_hist), GFP_KERNEL);
 
@@ -330,73 +329,111 @@ static __always_inline unsigned long wavetcp_compute_weight(unsigned long first_
 	return diff / first_rtt;
 }
 
-static u32 calculate_ack_train_disp(struct wavetcp *ca, const struct rate_sample *rs,
+static u32 heuristic_ack_train_disp(struct wavetcp *ca, const struct rate_sample *rs,
 				    u32 burst)
 {
+	u32 ack_train_disp = 0;
 	u32 backup_interval = 0;
+
+	BUG_ON (ca->previous_ack_train_disp != 0);
+
+	/*
+	 * The heuristic takes the RTT of the first ACK, the RTT of the
+	 * latest ACK, and uses the difference as ack_train_disp.
+	 *
+	 * If the sample for the first and last ACK are the same (e.g.,
+	 * one ACK per burst) we use as the latest option the value of
+	 * interval_us (which is the RTT). However, this value is
+	 * exponentially lowered each time we don't have any valid
+	 * sample (i.e., we perform a division by 2, by 4, and so on).
+	 * The increased transmitted rate, if it is out of the capacity
+	 * of the bottleneck, will be compensated by an higher
+	 * delta_rtt, and so limited by the adjustment algorithm. This
+	 * is a blind search, but we do not have any valid sample...
+	 */
+	if (rs->delivered == burst && rs->interval_us > 0) {
+		if (rs->interval_us >= ca->backup_first_ack_time)
+			/* first heuristic */
+			backup_interval = rs->interval_us - ca->backup_first_ack_time;
+		else {
+			/* this branch avoids an overflow. However, reaching
+			 * this point means that the ACK train is not aligned
+			 * with the sent burst. */
+			backup_interval = ca->backup_first_ack_time - rs->interval_us;
+		}
+
+		if (backup_interval == 0) {
+			/* Blind search */
+			ack_train_disp = rs->interval_us >> ca->heuristic_scale;
+			++ca->heuristic_scale;
+			DBG("%u [heuristic_ack_train_disp] we received one BIG ack."
+			    " Doing an heuristic with scale %u, interval_us"
+			    " %li us, and setting ack_train_disp to %u us\n",
+			    tcp_time_stamp, ca->heuristic_scale, rs->interval_us,
+			    ack_train_disp);
+		} else {
+			ack_train_disp = backup_interval;
+			DBG("%u [heuristic_ack_train_disp] we got the first ack with"
+			    " interval %u us, the last (this) with interval %li us."
+			    " Doing a substraction and setting ack_train_disp"
+			    " to %u us\n",
+			    tcp_time_stamp, ca->backup_first_ack_time,
+			    rs->interval_us, ack_train_disp);
+		}
+	} else {
+		DBG("%u [calculate_ack_train_disp] WARNING is not possible "
+		    "to heuristically calculate ack_train_disp, returning 0."
+		    "Delivered %u, interval_us %li\n",
+		    tcp_time_stamp, rs->delivered, rs->interval_us);
+		return 0;
+	}
+
+	return ack_train_disp;
+}
+
+static u32 calculate_ack_train_disp(struct wavetcp *ca, const struct rate_sample *rs,
+				    u32 burst, u64 delta_rtt)
+{
 	u32 ack_train_disp = jiffies_to_usecs(tcp_time_stamp - ca->first_ack_time);
 
-	if (ack_train_disp == 0) {
+	if (ca->previous_ack_train_disp == 0 && ack_train_disp == 0) {
 		/* We received a cumulative ACK just after we sent the data, so
 		 * the dispersion would be close to zero, OR the connection
 		 * is so fast that tcp_time_stamp is not good enough to measure
-		 * time. */
-		if (rs->delivered == burst && rs->interval_us > 0) {
-			/* the else branch avoids an overflow. However, reaching
-			 * that branch means that the ACK train is not aligned
-			 * with the sent burst */
-			if (rs->interval_us >= ca->backup_first_ack_time)
-				backup_interval = rs->interval_us - ca->backup_first_ack_time;
-			else
-				backup_interval = ca->backup_first_ack_time - rs->interval_us;
-
-			if (backup_interval == 0) {
-				ack_train_disp = rs->interval_us >> ca->heuristic_scale;
-				++ca->heuristic_scale;
-				DBG("%u [calculate_ack_train_disp] we received one BIG ack."
-				    " Doing an heuristic with scale %u, interval_us"
-				    " %li us, and setting ack_train_disp to %u us\n",
-				    tcp_time_stamp, ca->heuristic_scale, rs->interval_us,
-				    ack_train_disp);
-			} else {
-				ack_train_disp = backup_interval;
-				DBG("%u [calculate_ack_train_disp] we got the first ack with"
-				    " interval %u us, the last (this) with interval %li us."
-				    " Doing a substraction and setting ack_train_disp"
-				    " to %u us\n",
-				    tcp_time_stamp, ca->backup_first_ack_time,
-				    rs->interval_us, ack_train_disp);
-			}
-		} else if (ca->avg_ack_train_disp > 0) {
-			DBG("%u [calculate_ack_train_disp] ack_train_disp from avg %u\n",
-			    tcp_time_stamp, ca->avg_ack_train_disp);
-			ack_train_disp = ca->avg_ack_train_disp;
-		} else {
-			DBG("%u [calculate_ack_train_disp] WARNING is not possible "
-			    "to calculate ack_train_disp, returning 0\n",
-			    tcp_time_stamp);
-		}
-
-		/* Don't put this crafted value in the calculation of the average */
-		return ack_train_disp;
-	} else {
-		DBG("%u [calculate_ack_train_disp] using measured ack_train_disp %u",
-		    tcp_time_stamp, ack_train_disp);
-
-		/* resetting the heuristic scale because we have a real sample*/
-		ca->heuristic_scale = 0;
+		 * time. Moreover, we don't have any valid sample from the past;
+		 * in this case, we use an heuristic to calculate
+		 * ack_train_disp.
+		 */
+		return heuristic_ack_train_disp(ca, rs, burst);
 	}
 
-	/* Compute the average of the real ack train dispersion values */
-	if (ca->avg_ack_train_disp == 0) {
-		DBG("%u [calculate_ack_train_disp] avg_ack_train_disp is 0, setting ours: %i\n",
-		    tcp_time_stamp, ack_train_disp);
-		ca->avg_ack_train_disp = ack_train_disp;
-	} else {
-		ca->avg_ack_train_disp = (ca->avg_ack_train_disp / 2) + (ack_train_disp / 2);
-		DBG("%u [calculate_ack_train_disp] avg_ack_train_disp updated, result %u\n",
-		    tcp_time_stamp, ca->avg_ack_train_disp);
+	DBG("%u [calculate_ack_train_disp] using measured ack_train_disp %u",
+	    tcp_time_stamp, ack_train_disp);
+
+	/* resetting the heuristic scale because we have a real sample */
+	ca->heuristic_scale = 0;
+
+	/* initialize the value */
+	if (ca->previous_ack_train_disp == 0)
+		ca->previous_ack_train_disp = ack_train_disp;
+	else if (ack_train_disp > ca->previous_ack_train_disp) {
+		/* let's filter the measured value if it is greater than what we
+		 * already have */
+		unsigned long alpha;
+		unsigned long left;
+		unsigned long right;
+
+		alpha = (delta_rtt * AVG_UNIT) / (beta_ms * 1000);
+		left = ((AVG_UNIT - alpha) * ca->previous_ack_train_disp) / AVG_UNIT;
+		right = (alpha * ack_train_disp) / AVG_UNIT;
+		ack_train_disp = left + right;
+
+		DBG("%u [calculate_ack_train_disp] use previous ack_train_disp %u us, "
+		    "alpha %lu to filter a received ack_train_disp %u us\n",
+		    tcp_time_stamp, ca->previous_ack_train_disp, alpha, ack_train_disp);
 	}
+
+	ca->previous_ack_train_disp = ack_train_disp;
 
 	return ack_train_disp;
 }
@@ -477,7 +514,7 @@ static void wavetcp_round_terminated(struct sock *sk, const struct rate_sample *
 	DBG("%u [wavetcp_round_terminated] delta rtt %llu us\n",
 	    tcp_time_stamp, delta_rtt);
 
-	ack_train_disp = calculate_ack_train_disp(ca, rs, burst);
+	ack_train_disp = calculate_ack_train_disp(ca, rs, burst, delta_rtt);
 	if (ack_train_disp == 0) {
 		DBG("%u [wavetcp_round_terminated] without ack_train_disp, returning\n",
 		    tcp_time_stamp);
