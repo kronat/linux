@@ -286,14 +286,14 @@ static __always_inline void wavetcp_adj_mode(struct wavetcp *ca,
 					     unsigned long ack_train_disp,
 					     unsigned long delta_rtt)
 {
-	ca->stab_factor = ca->avg_rtt / ack_train_disp;
+	ca->stab_factor = ca->avg_rtt / ca->tx_timer;
 
 	ca->min_rtt = -1; /* a lot of time */
 	ca->avg_rtt = ca->max_rtt;
 	ca->tx_timer = init_timer_ms * USEC_PER_MSEC;
 
-	DBG("%u [wavetcp_adj_mode] stab_factor %u, avg_rtt %u, timer %u us",
-	    tcp_time_stamp, ca->stab_factor, ca->avg_rtt, ca->tx_timer);
+	DBG("%u [wavetcp_adj_mode] stab_factor %u, timer %u, avg_rtt %u us",
+	    tcp_time_stamp, ca->stab_factor, ca->tx_timer, ca->avg_rtt);
 }
 
 static __always_inline void wavetcp_tracking_mode(struct wavetcp *ca,
@@ -351,7 +351,7 @@ static u32 heuristic_ack_train_disp(struct wavetcp *ca, const struct rate_sample
 	 * delta_rtt, and so limited by the adjustment algorithm. This
 	 * is a blind search, but we do not have any valid sample...
 	 */
-	if (rs->delivered == burst && rs->interval_us > 0) {
+	if (rs->interval_us > 0) {
 		if (rs->interval_us >= ca->backup_first_ack_time)
 			/* first heuristic */
 			backup_interval = rs->interval_us - ca->backup_first_ack_time;
@@ -414,8 +414,9 @@ static u32 calculate_ack_train_disp(struct wavetcp *ca, const struct rate_sample
 	ca->heuristic_scale = 0;
 
 	/* initialize the value */
-	if (ca->previous_ack_train_disp == 0)
+	if (ca->previous_ack_train_disp == 0) {
 		ca->previous_ack_train_disp = ack_train_disp;
+		}
 	else if (ack_train_disp > ca->previous_ack_train_disp) {
 		/* let's filter the measured value if it is greater than what we
 		 * already have */
@@ -423,17 +424,29 @@ static u32 calculate_ack_train_disp(struct wavetcp *ca, const struct rate_sample
 		unsigned long left;
 		unsigned long right;
 
-		alpha = (delta_rtt * AVG_UNIT) / (beta_ms * 1000);
+		alpha = min(AVG_UNIT, ((delta_rtt * AVG_UNIT) / (beta_ms * 1000)));
+			if (alpha ==0){
+			ack_train_disp = ca->previous_ack_train_disp;
+			}
+			else {
 		left = ((AVG_UNIT - alpha) * ca->previous_ack_train_disp) / AVG_UNIT;
 		right = (alpha * ack_train_disp) / AVG_UNIT;
+		
+		DBG("%u [calculate_ack_train_disp] use alpha %lu to filter a received ack_train_disp %u us left %lu right %lu\n", tcp_time_stamp, alpha, 
+ack_train_disp, left, right);
 		ack_train_disp = left + right;
-
-		DBG("%u [calculate_ack_train_disp] use previous ack_train_disp %u us, "
-		    "alpha %lu to filter a received ack_train_disp %u us\n",
-		    tcp_time_stamp, ca->previous_ack_train_disp, alpha, ack_train_disp);
+		}
+				
 	}
-
-	ca->previous_ack_train_disp = ack_train_disp;
+	if (ack_train_disp == 0){
+		ack_train_disp = ca->previous_ack_train_disp;
+	}
+	else {
+		ca->previous_ack_train_disp = ack_train_disp;
+		}
+	
+		DBG("%u [calculate_ack_train_disp] previous_ack_train_disp %u us, final ack_train_disp %u us\n",
+		    tcp_time_stamp, ca->previous_ack_train_disp, ack_train_disp);
 
 	return ack_train_disp;
 }
@@ -479,11 +492,17 @@ static u64 calculate_delta_rtt(struct wavetcp *ca)
 		DBG("%u [calculate_delta_rtt] init. avg %u us, first %u us, "
 		    "min %u us, a (shifted) %lu",
 		    tcp_time_stamp, ca->avg_rtt, ca->first_rtt, ca->min_rtt, a);
+			if (a==0){
+			ca->avg_rtt = ca->first_rtt;
+			}
+			else{
+				left = (a * ca->avg_rtt) / AVG_UNIT;
+				right = ((AVG_UNIT - a) * ca->first_rtt) / AVG_UNIT;
+				ca->avg_rtt = left + right;
 
-		left = (a * ca->avg_rtt) / AVG_UNIT;
-		right = ((AVG_UNIT - a) * ca->first_rtt) / AVG_UNIT;
-
-		ca->avg_rtt = left + right;
+		DBG("%u [calculate_delta_rtt] shifting. avg %u us, left %lu , right %lu , a (shifted) %lu\n",
+		    tcp_time_stamp, ca->avg_rtt, left, right, a);
+			}
 	} else {
 		DBG("%u [calculate_delta_rtt] first_rtt is 0. It is impossible "
 		    "to calculate the average RTT. Using the old value.\n",
@@ -514,8 +533,6 @@ static void wavetcp_round_terminated(struct sock *sk, const struct rate_sample *
 	DBG("%u [wavetcp_round_terminated] delta rtt %llu us\n",
 	    tcp_time_stamp, delta_rtt);
 
-	ack_train_disp = calculate_ack_train_disp(ca, rs, burst, delta_rtt);
-
 	/* If we have to wait, let's wait */
 	if (ca->stab_factor > 0) {
 		--ca->stab_factor;
@@ -523,6 +540,7 @@ static void wavetcp_round_terminated(struct sock *sk, const struct rate_sample *
 		    tcp_time_stamp);
 		return;
 	}
+	ack_train_disp = calculate_ack_train_disp(ca, rs, burst, delta_rtt);
 
 	/* If we should not wait, but we have no valid sample, nothing happens */
 	if (ack_train_disp == 0) {
@@ -531,8 +549,8 @@ static void wavetcp_round_terminated(struct sock *sk, const struct rate_sample *
 		return;
 	}
 
-	DBG("%u [wavetcp_round_terminated] ack_train_disp %u us, drtt %llu, sf %u\n",
-	    tcp_time_stamp, ack_train_disp, delta_rtt, ca->stab_factor);
+	DBG("%u [wavetcp_round_terminated] ack_train_disp %u us, drtt %llu\n",
+	    tcp_time_stamp, ack_train_disp, delta_rtt);
 
 	/* delta_rtt is in us, beta_ms in ms */
 	if (delta_rtt > beta_ms * 1000)
