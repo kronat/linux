@@ -350,7 +350,7 @@ static u32 heuristic_ack_train_disp(struct wavetcp *ca, const struct rate_sample
 	 * delta_rtt, and so limited by the adjustment algorithm. This
 	 * is a blind search, but we do not have any valid sample...
 	 */
-	if (rs->delivered == burst && rs->interval_us > 0) {
+	if (rs->interval_us > 0) {
 		if (rs->interval_us >= ca->backup_first_ack_time)
 			/* first heuristic */
 			backup_interval = rs->interval_us - ca->backup_first_ack_time;
