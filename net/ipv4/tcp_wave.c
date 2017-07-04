@@ -413,9 +413,9 @@ static u32 calculate_ack_train_disp(struct wavetcp *ca, const struct rate_sample
 	ca->heuristic_scale = 0;
 
 	/* initialize the value */
-	if (ca->previous_ack_train_disp == 0)
+	if (ca->previous_ack_train_disp == 0) {
 		ca->previous_ack_train_disp = ack_train_disp;
-	else if (ack_train_disp > ca->previous_ack_train_disp) {
+	} else if (ack_train_disp > ca->previous_ack_train_disp) {
 		/* let's filter the measured value if it is greater than what we
 		 * already have */
 		unsigned long alpha;
@@ -427,9 +427,8 @@ static u32 calculate_ack_train_disp(struct wavetcp *ca, const struct rate_sample
 		right = (alpha * ack_train_disp) / AVG_UNIT;
 		ack_train_disp = left + right;
 
-		DBG("%u [calculate_ack_train_disp] use previous ack_train_disp %u us, "
-		    "alpha %lu to filter a received ack_train_disp %u us\n",
-		    tcp_time_stamp, ca->previous_ack_train_disp, alpha, ack_train_disp);
+		DBG("%u [calculate_ack_train_disp] use alpha %lu to filter a received ack_train_disp %u us left %lu right %lu\n",
+		    tcp_time_stamp, alpha, ack_train_disp, left, right);
 	}
 
 	ca->previous_ack_train_disp = ack_train_disp;
