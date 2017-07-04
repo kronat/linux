@@ -283,16 +283,15 @@ static void wavetcp_cwnd_event(struct sock *sk, enum tcp_ca_event event)
 }
 
 static __always_inline void wavetcp_adj_mode(struct wavetcp *ca,
-					     unsigned long ack_train_disp,
 					     unsigned long delta_rtt)
 {
-	ca->stab_factor = ca->avg_rtt / ack_train_disp;
+	ca->stab_factor = ca->avg_rtt / ca->tx_timer;
 
 	ca->min_rtt = -1; /* a lot of time */
 	ca->avg_rtt = ca->max_rtt;
 	ca->tx_timer = init_timer_ms * USEC_PER_MSEC;
 
-	DBG("%u [wavetcp_adj_mode] stab_factor %u, avg_rtt %u, timer %u us",
+	DBG("%u [wavetcp_adj_mode] stab_factor %u, avg_rtt %u us, timer %u us\n",
 	    tcp_time_stamp, ca->stab_factor, ca->avg_rtt, ca->tx_timer);
 }
 
@@ -536,7 +535,7 @@ static void wavetcp_round_terminated(struct sock *sk, const struct rate_sample *
 
 	/* delta_rtt is in us, beta_ms in ms */
 	if (delta_rtt > beta_ms * 1000)
-		wavetcp_adj_mode(ca, ack_train_disp, delta_rtt);
+		wavetcp_adj_mode(ca,  delta_rtt);
 	else
 		wavetcp_tracking_mode(ca, ack_train_disp, delta_rtt);
 }
