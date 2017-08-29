@@ -2241,6 +2241,7 @@ void tcp_chrono_stop(struct sock *sk, const enum tcp_chrono type)
 static bool tcp_write_xmit(struct sock *sk, unsigned int mss_now, int nonagle,
 			   int push_one, gfp_t gfp)
 {
+	const struct tcp_congestion_ops *ca_ops = inet_csk(sk)->icsk_ca_ops;
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct sk_buff *skb;
 	unsigned int tso_segs, sent_pkts;
@@ -2263,6 +2264,12 @@ static bool tcp_write_xmit(struct sock *sk, unsigned int mss_now, int nonagle,
 
 	max_segs = tcp_tso_segs(sk, mss_now);
 	tcp_mstamp_refresh(tp);
+
+	if (!tcp_pacing_timer_check(sk)) {
+		if (ca_ops->pacing_timer_expired)
+			ca_ops->pacing_timer_expired(sk);
+	}
+
 	while ((skb = tcp_send_head(sk))) {
 		unsigned int limit;
 
