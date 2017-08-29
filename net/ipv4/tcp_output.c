@@ -2250,6 +2250,7 @@ static bool tcp_write_xmit(struct sock *sk, unsigned int mss_now, int nonagle,
 	bool is_cwnd_limited = false, is_rwnd_limited = false;
 	u32 max_segs;
 	u32 pacing_allowed_segs = 0;
+	bool notify = false;
 
 	sent_pkts = 0;
 
@@ -2268,8 +2269,10 @@ static bool tcp_write_xmit(struct sock *sk, unsigned int mss_now, int nonagle,
 
 	if (!tcp_pacing_timer_check(sk)) {
 		pacing_allowed_segs = 1;
-		if (ca_ops->pacing_timer_expired)
+		if (ca_ops->pacing_timer_expired) {
 			ca_ops->pacing_timer_expired(sk);
+			notify = true;
+		}
 		if (ca_ops->get_segs_per_round)
 			pacing_allowed_segs = ca_ops->get_segs_per_round(sk);
 	}
@@ -2348,6 +2351,9 @@ repair:
 		if (push_one)
 			break;
 	}
+
+	if (ca_ops->segments_sent && notify)
+		ca_ops->segments_sent(sk, sent_pkts);
 
 	if (is_rwnd_limited)
 		tcp_chrono_start(sk, TCP_CHRONO_RWND_LIMITED);
