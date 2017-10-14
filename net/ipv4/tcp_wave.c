@@ -220,6 +220,7 @@ static u32 wavetcp_undo_cwnd(struct sock *sk)
 static void wavetcp_insert_burst(struct wavetcp *ca, u32 burst)
 {
 	struct wavetcp_burst_hist *cur;
+
 	pr_debug("%llu [%s] adding %u segment in the history of burst\n", NOW,
 		 __func__, burst);
 	/* Take the memory from the pre-allocated pool */
@@ -313,7 +314,7 @@ static ktime_t heuristic_ack_train_disp(struct sock *sk,
 {
 	struct wavetcp *ca = inet_csk_ca(sk);
 	ktime_t ack_train_disp = ns_to_ktime(0);
-	ktime_t interval = ns_to_ktime (0);
+	ktime_t interval = ns_to_ktime(0);
 	ktime_t backup_first_ack = ns_to_ktime(0);
 
 	if (rs->interval_us <= 0) {
@@ -328,8 +329,7 @@ static ktime_t heuristic_ack_train_disp(struct sock *sk,
 	interval = ns_to_ktime(rs->interval_us * NSEC_PER_USEC);
 	backup_first_ack = ns_to_ktime(ca->backup_first_ack_time_us * NSEC_PER_USEC);
 
-	/*
-	 * The heuristic takes the RTT of the first ACK, the RTT of the
+	/* The heuristic takes the RTT of the first ACK, the RTT of the
 	 * latest ACK, and uses the difference as ack_train_disp.
 	 *
 	 * If the sample for the first and last ACK are the same (e.g.,
@@ -375,8 +375,8 @@ static ktime_t heuristic_ack_train_disp(struct sock *sk,
 	return ack_train_disp;
 }
 
-/*
- * In case that round_burst == current_burst:
+
+/* In case that round_burst == current_burst:
  *
  * ack_train_disp = last - first * (rcv_ack/rcv_ack-1)
  *                  |__________|   |_________________|
@@ -411,7 +411,6 @@ static ktime_t get_ack_train_disp(const ktime_t *last_ack_time,
 			 ktime_to_us(*first_ack_time), round_burst);
 	}
 
-
 	return ns_to_ktime((left * right) / AVG_UNIT);
 }
 
@@ -424,7 +423,8 @@ static ktime_t calculate_ack_train_disp(struct sock *sk,
 
 	if (ktime_is_null(ca->first_ack_time) || ca->aligned_acks_rcv <= 1) {
 		/* We don't have the initial bound of the burst,
-		 * or we don't have samples to do measurements */
+		 * or we don't have samples to do measurements
+		 */
 		if (ktime_is_null(ca->previous_ack_t_disp))
 			/* do heuristic without saving anything */
 			return heuristic_ack_train_disp(sk, rs, burst);
@@ -433,27 +433,25 @@ static ktime_t calculate_ack_train_disp(struct sock *sk,
 			return ca->previous_ack_t_disp;
 	}
 
-        /*
-         * If we have a complete burst, the value returned by get_ack_train_disp
-         * is safe to use. Otherwise, it can be a bad approximation, so it's better
-         * to use the previous value. Of course, if we don't have such value,
-         * a bad approximation is better than nothing.
-         */
-        if (burst == ca->burst || ktime_is_null(ca->previous_ack_t_disp))
+	/* If we have a complete burst, the value returned by get_ack_train_disp
+	 * is safe to use. Otherwise, it can be a bad approximation, so it's better
+	 * to use the previous value. Of course, if we don't have such value,
+	 * a bad approximation is better than nothing.
+	 */
+	if (burst == ca->burst || ktime_is_null(ca->previous_ack_t_disp))
 		ack_train_disp = get_ack_train_disp(&ca->last_ack_time,
 						    &ca->first_ack_time,
 						    ca->aligned_acks_rcv,
 						    burst, ca->burst);
-        else
-                return ca->previous_ack_t_disp;
-
+	else
+		return ca->previous_ack_t_disp;
 
 	if (ktime_is_null(ack_train_disp)) {
 		/* Use the plain previous value */
 		pr_debug("%llu sport: %u [%s] use_plain previous_ack_train_disp %lli us, ack_train_disp %lli us\n",
-			NOW, SPORT(sk), __func__,
-			ktime_to_us(ca->previous_ack_t_disp),
-			ktime_to_us(ack_train_disp));
+			 NOW, SPORT(sk), __func__,
+			 ktime_to_us(ca->previous_ack_t_disp),
+			 ktime_to_us(ack_train_disp));
 		return ca->previous_ack_t_disp;
 	} else {
 		/* We have a real sample! */
@@ -461,12 +459,6 @@ static ktime_t calculate_ack_train_disp(struct sock *sk,
 		ca->previous_ack_t_disp = ack_train_disp;
 	}
 
-#ifdef FALSE
-	if (ktime_compare(ack_train_disp, ca->previous_ack_t_disp) > 0) {
-		/* filter the measured value */
-		return filter_ack_train_disp(sk, delta_rtt_us, ack_train_disp);
-	}
-#endif
 	pr_debug("%llu sport: %u [%s] previous_ack_train_disp %lli us, final_ack_train_disp %lli us\n",
 		NOW, SPORT(sk), __func__, ktime_to_us(ca->previous_ack_t_disp),
 		ktime_to_us(ack_train_disp));
@@ -515,7 +507,6 @@ static u32 calculate_avg_rtt(struct sock *sk)
 		left = (a * ca->avg_rtt) / AVG_UNIT;
 		right = ((AVG_UNIT - a) * ca->first_rtt) / AVG_UNIT;
 
-
 		pr_debug("%llu sport: %u [%s] previous avg %u us, first_rtt %u us, "
 			 "min %u us, a (shifted) %llu, calculated avg %u us\n",
 			 NOW, SPORT(sk), __func__, old_value, ca->first_rtt,
@@ -533,7 +524,8 @@ static u64 calculate_delta_rtt(const struct wavetcp *ca)
 	return ca->avg_rtt - ca->min_rtt;
 }
 
-static void wavetcp_round_terminated(struct sock *sk, const struct rate_sample *rs,
+static void wavetcp_round_terminated(struct sock *sk,
+				     const struct rate_sample *rs,
 				     u32 burst)
 {
 	struct wavetcp *ca = inet_csk_ca(sk);
@@ -647,7 +639,8 @@ static void wavetcp_end_round(struct sock *sk, const struct rate_sample *rs,
 	 * in reality we are at the beginning of the next round,
 	 * and the previous middle was an end. In the other case,
 	 * update last_ack_time with the current time, and the number of
-	 * received acks. */
+	 * received acks.
+	 */
 	if (rs->rtt_us >= ca->previous_rtt) {
 		++ca->aligned_acks_rcv;
 		ca->last_ack_time = *now;
@@ -669,7 +662,6 @@ static void wavetcp_end_round(struct sock *sk, const struct rate_sample *rs,
 
 	/* Consume the burst history if it's a cumulative ACK for many bursts */
 	while (tmp && ca->pkts_acked >= tmp->size) {
-
 		ca->pkts_acked -= tmp->size;
 
 		/* Delete the burst from the history */
@@ -686,7 +678,8 @@ static void wavetcp_end_round(struct sock *sk, const struct rate_sample *rs,
 	wavetcp_reset_round(ca);
 
 	/* We have to emulate a beginning of the round in case this RTT is less than
-         * the previous one */
+         * the previous one
+	 */
 	if (rs->rtt_us > 0 && rs->rtt_us < ca->previous_rtt) {
 		pr_debug("%llu sport: %u [%s] Emulating the beginning, set the first_rtt to %u\n",
 			 NOW, SPORT(sk), __func__, ca->first_rtt);
@@ -700,10 +693,11 @@ static void wavetcp_end_round(struct sock *sk, const struct rate_sample *rs,
 		wavetcp_middle_round(sk, &ca->last_ack_time, now);
 
 		/* Take the measurements for the RTT. If we are not emulating a
-		 * beginning, then let the real begin to take it */
+		 * beginning, then let the real begin to take it
+		 */
 		wavetcp_rtt_measurements(sk, rs->rtt_us, rs->interval_us);
 
-		/* Emulate the reception of one aligned ack, this */ 
+		/* Emulate the reception of one aligned ack, this */
 		ca->aligned_acks_rcv = 1;
 	} else if (rs->rtt_us > 0) {
 		ca->previous_rtt = rs->rtt_us;
@@ -736,22 +730,22 @@ static void wavetcp_cong_control(struct sock *sk, const struct rate_sample *rs)
 	/* Train management.*/
 	ca->pkts_acked += rs->acked_sacked;
 
-	if (ca->previous_rtt < rs->rtt_us) {
-		 pr_debug("%llu sport: %u [%s] previous < rtt: %u < %li",
-			  NOW, SPORT(sk), __func__, ca->previous_rtt,
-			  rs->rtt_us);
-	} else {
-		 pr_debug("%llu sport: %u [%s] previous >= rtt: %u >= %li",
-			  NOW, SPORT(sk), __func__, ca->previous_rtt,
-			  rs->rtt_us);
-	}
+	if (ca->previous_rtt < rs->rtt_us)
+		pr_debug("%llu sport: %u [%s] previous < rtt: %u < %li",
+			 NOW, SPORT(sk), __func__, ca->previous_rtt,
+			 rs->rtt_us);
+	else
+		pr_debug("%llu sport: %u [%s] previous >= rtt: %u >= %li",
+			 NOW, SPORT(sk), __func__, ca->previous_rtt,
+			 rs->rtt_us);
 
 	/* We have three possibilities: beginning, middle, end.
-	 *  - Beginning: is the moment in which we receive the first ACK for the
-	 *    round
+	 *  - Beginning: is the moment in which we receive the first ACK for
+	 *    the round
 	 *  - Middle: we are receiving ACKs but still not as many to cover a
 	 *    complete burst
-	 *  - End: the other end ACKed sufficient bytes to declare a round completed
+	 *  - End: the other end ACKed sufficient bytes to declare a round
+	 *    completed
 	 */
 	if (ca->pkts_acked < tmp->size) {
 		/* The way to discriminate between beginning and end is thanks
@@ -772,7 +766,7 @@ static void wavetcp_cong_control(struct sock *sk, const struct rate_sample *rs)
 				pr_debug("%llu sport: %u [%s] middle aligned ack (tot %u)\n",
 					 NOW, SPORT(sk), __func__,
 					 ca->aligned_acks_rcv);
-			} else if (rs->rtt_us > 0){
+			} else if (rs->rtt_us > 0) {
 				/* This is the real round beginning! */
 				ca->aligned_acks_rcv = 1;
 				ca->pkts_acked = ca->backup_pkts_acked + rs->acked_sacked;
@@ -786,7 +780,8 @@ static void wavetcp_cong_control(struct sock *sk, const struct rate_sample *rs)
 		}
 
 		/* Take RTT measurements for min and max measurments. For the
-		 * end of the burst, do it manually depending on the case */
+		 * end of the burst, do it manually depending on the case
+		 */
 		wavetcp_rtt_measurements(sk, rs->rtt_us, rs->interval_us);
 	} else {
 		wavetcp_end_round(sk, rs, &now);
@@ -840,7 +835,8 @@ static void wavetcp_timer_expired(struct sock *sk)
 	struct tcp_sock *tp = tcp_sk(sk);
 	u32 current_burst = ca->burst;
 
-	if (!test_flag(ca->flags, FLAG_START) || !test_flag(ca->flags, FLAG_INIT)) {
+	if (!test_flag(ca->flags, FLAG_START) ||
+	    !test_flag(ca->flags, FLAG_INIT)) {
 		pr_debug("%llu sport: %u [%s] returning because of flags, leaving cwnd %u\n",
 			 NOW, SPORT(sk), __func__, tp->snd_cwnd);
 		return;
@@ -953,7 +949,8 @@ static void wavetcp_segment_sent(struct sock *sk, u32 sent)
 	    ca->burst > sent &&
 	    tcp_packets_in_flight(tp) <= tp->snd_cwnd) {
 		/* Reduce the cwnd accordingly, because we didn't sent enough
-		 * to cover it (we are app limited probably) */
+		 * to cover it (we are app limited probably)
+		 */
 		u32 diff = ca->burst - sent;
 
 		if (tp->snd_cwnd >= diff)
@@ -982,7 +979,7 @@ static size_t wavetcp_get_info(struct sock *sk, u32 ext, int *attr,
 		info->wave.avg_rtt	= ca->avg_rtt;
 		info->wave.max_rtt	= ca->max_rtt;
 		*attr = INET_DIAG_WAVEINFO;
-		return (sizeof(info->wave));
+		return sizeof(info->wave);
 	}
 	return 0;
 }
