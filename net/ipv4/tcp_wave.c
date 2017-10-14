@@ -21,9 +21,8 @@
 #define pr_fmt(fmt) "WAVE: " fmt
 
 #include <net/tcp.h>
-#include <linux/module.h>
 #include <linux/inet_diag.h>
-#include <linux/slab.h>
+#include <linux/module.h>
 
 #define NOW ktime_to_us(ktime_get())
 #define SPORT(sk) ntohs(inet_sk(sk)->inet_sport)
@@ -1012,13 +1011,13 @@ static struct tcp_congestion_ops wave_cong_tcp __read_mostly = {
 	.cwnd_event		= wavetcp_cwnd_event,
 	.pkts_acked		= wavetcp_acked,
 	.sndbuf_expand		= wavetcp_sndbuf_expand,
-	.owner			= THIS_MODULE,
-	.name			= "wave",
 	.get_pacing_time	= wavetcp_get_timer,
 	.pacing_timer_expired	= wavetcp_timer_expired,
 	.no_data_to_transmit	= wavetcp_no_data,
 	.get_segs_per_round	= wavetcp_get_segs_per_round,
 	.segments_sent		= wavetcp_segment_sent,
+	.owner			= THIS_MODULE,
+	.name			= "wave",
 };
 
 static int __init wavetcp_register(void)
