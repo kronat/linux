@@ -21,17 +21,9 @@
 #define pr_fmt(fmt) "WAVE: " fmt
 
 #include <linux/module.h>
-#include <net/net_namespace.h>
 #include <net/tcp.h>
 #include <linux/inet_diag.h>
 #include <linux/slab.h>
-#include <linux/proc_fs.h>
-
-#ifdef DEBUG
-static bool enable_log = true;
-#else
-static bool enable_log = false;
-#endif
 
 #define NOW ktime_to_us(ktime_get())
 #define SPORT(sk) ntohs(inet_sk(sk)->inet_sport)
@@ -42,8 +34,6 @@ static uint min_burst __read_mostly = 3;
 static uint init_timer_ms __read_mostly = 200;
 static uint beta_ms __read_mostly = 150;
 static int port __read_mostly = 0;
-static unsigned int bufsize __read_mostly = 4096;
-static const char procname[] = "tcpwave";
 
 module_param(init_burst, uint, 0644);
 MODULE_PARM_DESC(init_burst, "initial burst (segments)");
@@ -55,8 +45,6 @@ module_param(beta_ms, uint, 0644);
 MODULE_PARM_DESC(beta_ms, "beta parameter (ms)");
 module_param(port, int, 0);
 MODULE_PARM_DESC(port, "Port to match when logging (0=all)");
-module_param(bufsize, uint, 0);
-MODULE_PARM_DESC(bufsize, "Log buffer size in packets (4096)");
 
 /* Shift factor for the exponentially weighted average. */
 #define AVG_SCALE 20
@@ -72,29 +60,6 @@ MODULE_PARM_DESC(bufsize, "Log buffer size in packets (4096)");
 #define FLAG_START      0x2
 /* If it's true, we save the sent size as a burst */
 #define FLAG_SAVE       0x4
-
-/* Log struct */
-struct wavetcp_log {
-	ktime_t tstamp;
-	union {
-		struct sockaddr		raw;
-		struct sockaddr_in	v4;
-		struct sockaddr_in6	v6;
-	} src, dst;
-	u32 tx_timer;
-	u16 burst;
-	u32 min_rtt;
-	u32 avg_rtt;
-	u32 max_rtt;
-};
-
-static struct {
-	spinlock_t		lock;
-	wait_queue_head_t	wait;
-	ktime_t			start;
-	unsigned long		head, tail;
-	struct wavetcp_log	*log;
-} wavetcp_probe;
 
 /* List for saving the size of sent burst over time */
 struct wavetcp_burst_hist {
@@ -313,27 +278,9 @@ static void wavetcp_adj_mode(struct sock *sk, unsigned long delta_rtt)
 	    ca->tx_timer, ca->avg_rtt);
 }
 
-static int wavetcp_probe_used(void)
-{
-	return (wavetcp_probe.head - wavetcp_probe.tail) & (bufsize - 1);
-}
-
-static int wavetcp_probe_avail(void)
-{
-	return bufsize - wavetcp_probe_used() - 1;
-}
-
-#define wavetcp_probe_copy_fl_to_si4(inet, si4, mem)		\
-	do {							\
-		si4.sin_family = AF_INET;			\
-		si4.sin_port = inet->inet_##mem##port;		\
-		si4.sin_addr.s_addr = inet->inet_##mem##addr;	\
-	} while (0)						\
-
 static void wavetcp_tracking_mode(struct sock *sk, u64 delta_rtt,
 				  ktime_t ack_train_disp)
 {
-	const struct inet_sock *inet = inet_sk(sk);
 	struct wavetcp *ca = inet_csk_ca(sk);
 
 	if (ktime_is_null(ack_train_disp)) {
@@ -353,53 +300,6 @@ static void wavetcp_tracking_mode(struct sock *sk, u64 delta_rtt,
 
 	pr_debug("%llu sport: %u [%s] tx timer is %u us\n",
 	    NOW, SPORT(sk), __func__, ca->tx_timer);
-
-	if (!enable_log)
-		return;
-
-	if (port == 0 ||
-	    ntohs(inet->inet_dport) == port ||
-	    ntohs(inet->inet_sport) == port) {
-
-		spin_lock(&wavetcp_probe.lock);
-		if (wavetcp_probe_avail() > 1) {
-			struct wavetcp_log *p = wavetcp_probe.log + wavetcp_probe.head;
-			p->tstamp = ktime_get();
-
-			switch (sk->sk_family) {
-			case AF_INET:
-				wavetcp_probe_copy_fl_to_si4(inet, p->src.v4, s);
-				wavetcp_probe_copy_fl_to_si4(inet, p->dst.v4, d);
-				break;
-			case AF_INET6:
-				memset(&p->src.v6, 0, sizeof(p->src.v6));
-				memset(&p->dst.v6, 0, sizeof(p->dst.v6));
-#if IS_ENABLED(CONFIG_IPV6)
-				p->src.v6.sin6_family = AF_INET6;
-				p->src.v6.sin6_port = inet->inet_sport;
-				p->src.v6.sin6_addr = inet6_sk(sk)->saddr;
-
-				p->dst.v6.sin6_family = AF_INET6;
-				p->dst.v6.sin6_port = inet->inet_dport;
-				p->dst.v6.sin6_addr = sk->sk_v6_daddr;
-#endif
-				break;
-			default:
-				BUG();
-			}
-
-			p->tx_timer = ca->tx_timer;
-			p->burst = ca->burst;
-			p->min_rtt = ca->min_rtt;
-			p->avg_rtt = ca->avg_rtt;
-			p->max_rtt = ca->max_rtt;
-
-			wavetcp_probe.head = (wavetcp_probe.head + 1) & (bufsize - 1);
-		}
-		spin_unlock (&wavetcp_probe.lock);
-
-		wake_up(&wavetcp_probe.wait);
-	}
 }
 
 /* The weight a is:
@@ -1159,124 +1059,15 @@ static struct tcp_congestion_ops wave_cong_tcp __read_mostly = {
 	.segments_sent		= wavetcp_segment_sent,
 };
 
-
-static int wavetcp_log_open(struct inode *inode, struct file *file)
-{
-	/* Reset (empty) log */
-	spin_lock_bh(&wavetcp_probe.lock);
-	wavetcp_probe.head = wavetcp_probe.tail = 0;
-	wavetcp_probe.start = ktime_get();
-	spin_unlock_bh(&wavetcp_probe.lock);
-
-	return 0;
-}
-
-static int wavetcp_log_sprint(char *tbuf, int n)
-{
-	const struct wavetcp_log *p = wavetcp_probe.log + wavetcp_probe.tail;
-	struct timespec64 ts = ktime_to_timespec64(ktime_sub(p->tstamp,
-							     wavetcp_probe.start));
-
-	return scnprintf(tbuf, n,
-			"%lu.%09lu %pISpc %pISpc %u %u %u %u %u\n",
-			(unsigned long)ts.tv_sec,
-			(unsigned long)ts.tv_nsec,
-			&p->src, &p->dst, p->tx_timer, p->burst,
-			p->min_rtt, p->avg_rtt, p->max_rtt);
-}
-
-static ssize_t wavetcp_log_read(struct file *file, char __user *buf,
-			    size_t len, loff_t *ppos)
-{
-	int error = 0;
-	size_t cnt = 0;
-
-	if (!buf)
-		return -EINVAL;
-
-	while (cnt < len) {
-		char tbuf[256];
-		int width;
-
-		/* Wait for data in buffer */
-		error = wait_event_interruptible(wavetcp_probe.wait,
-						 wavetcp_probe_used() > 0);
-		if (error)
-			break;
-
-		spin_lock_bh(&wavetcp_probe.lock);
-		if (wavetcp_probe.head == wavetcp_probe.tail) {
-			/* multiple readers race? */
-			spin_unlock_bh(&wavetcp_probe.lock);
-			continue;
-		}
-
-		width = wavetcp_log_sprint(tbuf, sizeof(tbuf));
-
-		if (cnt + width < len)
-			wavetcp_probe.tail = (wavetcp_probe.tail + 1) & (bufsize - 1);
-
-		spin_unlock_bh(&wavetcp_probe.lock);
-
-		/* if record greater than space available
-		   return partial buffer (so far) */
-		if (cnt + width >= len)
-			break;
-
-		if (copy_to_user(buf + cnt, tbuf, width))
-			return -EFAULT;
-		cnt += width;
-	}
-
-	return cnt == 0 ? error : cnt;
-}
-
-static const struct file_operations tcpwave_fops = {
-	.owner	= THIS_MODULE,
-	.open	= wavetcp_log_open,
-	.read	= wavetcp_log_read,
-	.llseek	= noop_llseek,
-};
-
 static int __init wavetcp_register(void)
 {
 	BUILD_BUG_ON(sizeof(struct wavetcp) > ICSK_CA_PRIV_SIZE);
 
-	if (!enable_log)
-		return tcp_register_congestion_control(&wave_cong_tcp);
-
-	/* wave log initialization */
-
-	init_waitqueue_head(&wavetcp_probe.wait);
-	spin_lock_init(&wavetcp_probe.lock);
-
-	if (bufsize == 0)
-		return -EINVAL;
-
-	bufsize = roundup_pow_of_two(bufsize);
-	wavetcp_probe.log = kcalloc(bufsize, sizeof(struct wavetcp_log), GFP_KERNEL);
-
-	if (!wavetcp_probe.log)
-		goto leave;
-
-	if (!proc_create(procname, S_IRUSR, init_net.proc_net, &tcpwave_fops))
-		goto freemem;
-
 	return tcp_register_congestion_control(&wave_cong_tcp);
-
-freemem:
-	kfree(wavetcp_probe.log);
-leave:
-	return -ENOMEM;
 }
 
 static void __exit wavetcp_unregister(void)
 {
-	if (enable_log) {
-		remove_proc_entry(procname, init_net.proc_net);
-		kfree(wavetcp_probe.log);
-	}
-
 	tcp_unregister_congestion_control(&wave_cong_tcp);
 }
 
@@ -1286,4 +1077,4 @@ module_exit(wavetcp_unregister);
 MODULE_AUTHOR("Natale Patriciello");
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("WAVE TCP");
-MODULE_VERSION("0.1");
+MODULE_VERSION("0.2");
