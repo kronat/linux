@@ -386,30 +386,6 @@ static ktime_t heuristic_ack_train_disp(struct sock *sk,
 	return ack_train_disp;
 }
 
-static ktime_t filter_ack_train_disp(const struct sock *sk, u64 delta_rtt_us,
-				     ktime_t measured_ack_t_disp)
-{
-	const struct wavetcp *ca = inet_csk_ca(sk);
-	ktime_t filtered_ack_t_disp;
-	u64 alpha, left, right;
-
-	alpha = (delta_rtt_us * AVG_UNIT) / (beta_ms * USEC_PER_MSEC);
-	left = ((AVG_UNIT - alpha) * ktime_to_us(ca->previous_ack_t_disp)) / AVG_UNIT;
-	right = (alpha * ktime_to_us(measured_ack_t_disp)) / AVG_UNIT;
-
-	filtered_ack_t_disp = ns_to_ktime(((u32)left + (u32)right) * NSEC_PER_USEC);
-
-	pr_debug("%llu sport: %u [%s] AVG_UNIT %i delta_rtt %llu beta %i alpha %llu "
-	    "measured_ack_train_disp %lli us prv_ack_train_disp %lli us left %llu right %llu, final %lli\n",
-	    NOW, SPORT(sk), __func__, AVG_UNIT, delta_rtt_us,
-	    beta_ms, alpha, ktime_to_us(measured_ack_t_disp),
-	    ktime_to_us(ca->previous_ack_t_disp),
-	    left, right, ktime_to_us(filtered_ack_t_disp));
-
-	return filtered_ack_t_disp;
-
-}
-
 /*
  * In case that round_burst == current_burst:
  *
