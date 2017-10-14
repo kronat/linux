@@ -20,20 +20,19 @@
 
 #define pr_fmt(fmt) "WAVE: " fmt
 
-#include <linux/module.h>
 #include <net/tcp.h>
+#include <linux/module.h>
 #include <linux/inet_diag.h>
 #include <linux/slab.h>
 
 #define NOW ktime_to_us(ktime_get())
 #define SPORT(sk) ntohs(inet_sk(sk)->inet_sport)
-#define DPORT(sk) ntohs(inet_sk(sk)->inet_dport);
+#define DPORT(sk) ntohs(inet_sk(sk)->inet_dport)
 
 static uint init_burst __read_mostly = 10;
 static uint min_burst __read_mostly = 3;
 static uint init_timer_ms __read_mostly = 200;
 static uint beta_ms __read_mostly = 150;
-static int port __read_mostly = 0;
 
 module_param(init_burst, uint, 0644);
 MODULE_PARM_DESC(init_burst, "initial burst (segments)");
@@ -43,16 +42,10 @@ module_param(init_timer_ms, uint, 0644);
 MODULE_PARM_DESC(init_timer_ms, "initial timer (ms)");
 module_param(beta_ms, uint, 0644);
 MODULE_PARM_DESC(beta_ms, "beta parameter (ms)");
-module_param(port, int, 0);
-MODULE_PARM_DESC(port, "Port to match when logging (0=all)");
 
 /* Shift factor for the exponentially weighted average. */
 #define AVG_SCALE 20
-#define AVG_UNIT (1 << AVG_SCALE)
-
-/* Taken from BBR */
-#define BW_SCALE 24
-#define BW_UNIT (1 << BW_SCALE)
+#define AVG_UNIT BIT(AVG_SCALE)
 
 /* Tell if the driver is initialized (init has been called) */
 #define FLAG_INIT       0x1
@@ -92,7 +85,7 @@ struct wavetcp {
 	u8 flags; /* The module flags */
 	u32 tx_timer; /* The current transmission timer (us) */
 	u8 burst; /* The current burst size (segments) */
-	s8 delta_segments; /* Represents a delta from the burst size of segments sent */
+	s8 delta_segments; /* Difference between sent and burst size */
 	u16 pkts_acked; /* The segments acked in the round */
 	u8 backup_pkts_acked;
 	u8 aligned_acks_rcv; /* The number of ACKs received in a round */
@@ -107,10 +100,9 @@ struct wavetcp {
 	u32 avg_rtt; /* Average RTT of the previous round */
 	u32 max_rtt; /* Maximum RTT */
 	u8 stab_factor; /* Stability factor */
-	struct kmem_cache *cache; /* The memory cache for saving the burst sizes */
+	struct kmem_cache *cache; /* The memory for saving the burst sizes */
 	struct wavetcp_burst_hist *history; /* The burst history */
 };
-
 
 /* Called to setup Wave for the current socket after it enters the CONNECTED
  * state (i.e., called after the SYN-ACK is received). The slow start should be
@@ -130,8 +122,7 @@ static void wavetcp_init(struct sock *sk)
 	struct wavetcp *ca = inet_csk_ca(sk);
 	struct tcp_sock *tp = tcp_sk(sk);
 
-	pr_debug("%llu sport: %u [%s]\n", NOW, SPORT(sk),
-	    __func__);
+	pr_debug("%llu sport: %u [%s]\n", NOW, SPORT(sk), __func__);
 
 	/* Setting the initial Cwnd to 0 will not call the TX_START event */
 	tp->snd_ssthresh = 0;
@@ -177,8 +168,7 @@ static void wavetcp_release(struct sock *sk)
 	if (!test_flag(ca->flags, FLAG_INIT))
 		return;
 
-	pr_debug("%llu sport: %u [%s]\n", NOW, SPORT(sk),
-	    __func__);
+	pr_debug("%llu sport: %u [%s]\n", NOW, SPORT(sk), __func__);
 
 	list_for_each_safe(pos, q, &ca->history->list) {
 		tmp = list_entry(pos, struct wavetcp_burst_hist, list);
@@ -207,13 +197,13 @@ static void wavetcp_state(struct sock *sk, u8 new_state)
 	switch (new_state) {
 	case TCP_CA_Open:
 		pr_debug("%llu sport: %u [%s] set CA_Open\n", NOW,
-		    SPORT(sk), __func__);
+			 SPORT(sk), __func__);
 		/* We have fully recovered, so reset some variables */
 		ca->delta_segments = 0;
 		break;
 	default:
 		pr_debug("%llu sport: %u [%s] set state %u, ignored\n",
-		    NOW, SPORT(sk), __func__, new_state);
+			 NOW, SPORT(sk), __func__, new_state);
 	}
 }
 
@@ -230,7 +220,8 @@ static u32 wavetcp_undo_cwnd(struct sock *sk)
 static void wavetcp_insert_burst(struct wavetcp *ca, u32 burst)
 {
 	struct wavetcp_burst_hist *cur;
-	pr_debug("%llu [%s] adding %u segment in the history of burst\n", NOW, __func__, burst);
+	pr_debug("%llu [%s] adding %u segment in the history of burst\n", NOW,
+		 __func__, burst);
 	/* Take the memory from the pre-allocated pool */
 	cur = (struct wavetcp_burst_hist *)kmem_cache_alloc(ca->cache,
 							    GFP_KERNEL);
@@ -251,14 +242,14 @@ static void wavetcp_cwnd_event(struct sock *sk, enum tcp_ca_event event)
 	case CA_EVENT_TX_START:
 		/* first transmit when no packets in flight */
 		pr_debug("%llu sport: %u [%s] TX_START\n", NOW,
-		    SPORT(sk), __func__);
+			 SPORT(sk), __func__);
 
 		set_flag(&ca->flags, FLAG_START);
 
 		break;
 	default:
 		pr_debug("%llu sport: %u [%s] got event %u, ignored\n",
-		    NOW, SPORT(sk), __func__, event);
+			 NOW, SPORT(sk), __func__, event);
 		break;
 	}
 }
@@ -274,8 +265,8 @@ static void wavetcp_adj_mode(struct sock *sk, unsigned long delta_rtt)
 	ca->tx_timer = init_timer_ms * USEC_PER_MSEC;
 
 	pr_debug("%llu sport: %u [%s] stab_factor %u, timer %u us, avg_rtt %u us\n",
-	    NOW, SPORT(sk), __func__, ca->stab_factor,
-	    ca->tx_timer, ca->avg_rtt);
+		 NOW, SPORT(sk), __func__, ca->stab_factor,
+		 ca->tx_timer, ca->avg_rtt);
 }
 
 static void wavetcp_tracking_mode(struct sock *sk, u64 delta_rtt,
@@ -285,7 +276,7 @@ static void wavetcp_tracking_mode(struct sock *sk, u64 delta_rtt,
 
 	if (ktime_is_null(ack_train_disp)) {
 		pr_debug("%llu sport: %u [%s] ack_train_disp is 0. Impossible to do tracking.\n",
-		    NOW, SPORT(sk), __func__);
+			 NOW, SPORT(sk), __func__);
 		return;
 	}
 
@@ -293,13 +284,13 @@ static void wavetcp_tracking_mode(struct sock *sk, u64 delta_rtt,
 
 	if (ca->tx_timer == 0) {
 		pr_debug("%llu sport: %u [%s] WARNING: tx timer is 0"
-		    ", forcefully set it to 1000 us\n",
-		    NOW, SPORT(sk), __func__);
+			 ", forcefully set it to 1000 us\n",
+			 NOW, SPORT(sk), __func__);
 		ca->tx_timer = 1000;
 	}
 
 	pr_debug("%llu sport: %u [%s] tx timer is %u us\n",
-	    NOW, SPORT(sk), __func__, ca->tx_timer);
+		 NOW, SPORT(sk), __func__, ca->tx_timer);
 }
 
 /* The weight a is:
@@ -327,10 +318,10 @@ static ktime_t heuristic_ack_train_disp(struct sock *sk,
 
 	if (rs->interval_us <= 0) {
 		pr_debug("%llu sport: %u [%s] WARNING is not possible "
-		    "to heuristically calculate ack_train_disp, returning 0."
-		    "Delivered %u, interval_us %li\n",
-		    NOW, SPORT(sk), __func__,
-		    rs->delivered, rs->interval_us);
+			 "to heuristically calculate ack_train_disp, returning 0."
+			 "Delivered %u, interval_us %li\n",
+			 NOW, SPORT(sk), __func__,
+			 rs->delivered, rs->interval_us);
 		return ack_train_disp;
 	}
 
@@ -368,19 +359,17 @@ static ktime_t heuristic_ack_train_disp(struct sock *sk,
 		++ca->heuristic_scale;
 		ack_train_disp = ns_to_ktime(blind_interval_us * NSEC_PER_USEC);
 		pr_debug("%llu sport: %u [%s] we received one BIG ack."
-		    " Doing an heuristic with scale %u, interval_us"
-		    " %li us, and setting ack_train_disp to %lli us\n",
-		    NOW, SPORT(sk), __func__,
-		    ca->heuristic_scale, rs->interval_us,
-		    ktime_to_us(ack_train_disp));
+			 " Doing an heuristic with scale %u, interval_us"
+			 " %li us, and setting ack_train_disp to %lli us\n",
+			 NOW, SPORT(sk), __func__, ca->heuristic_scale,
+			 rs->interval_us, ktime_to_us(ack_train_disp));
 	} else {
 		pr_debug("%llu sport: %u [%s] we got the first ack with"
-		    " interval %u us, the last (this) with interval %li us."
-		    " Doing a substraction and setting ack_train_disp"
-		    " to %lli us\n",
-		    NOW, SPORT(sk), __func__,
-		    ca->backup_first_ack_time_us, rs->interval_us,
-		    ktime_to_us(ack_train_disp));
+			 " interval %u us, the last (this) with interval %li us."
+			 " Doing a substraction and setting ack_train_disp"
+			 " to %lli us\n", NOW, SPORT(sk), __func__,
+			 ca->backup_first_ack_time_us, rs->interval_us,
+			 ktime_to_us(ack_train_disp));
 	}
 
 	return ack_train_disp;
@@ -411,7 +400,8 @@ static ktime_t get_ack_train_disp(const ktime_t *last_ack_time,
 		right = (aligned_acks_rcv * AVG_UNIT) / (aligned_acks_rcv - 1);
 		pr_debug("%llu [%s] last %lli us, first %lli us, acks %u round_burst %u current_burst %u\n",
 			 NOW, __func__, ktime_to_us(*last_ack_time),
-			 ktime_to_us(*first_ack_time), aligned_acks_rcv, round_burst, current_burst);
+			 ktime_to_us(*first_ack_time), aligned_acks_rcv,
+			 round_burst, current_burst);
 	} else {
 		right = current_burst;
 		left *= AVG_UNIT;
@@ -461,7 +451,9 @@ static ktime_t calculate_ack_train_disp(struct sock *sk,
 	if (ktime_is_null(ack_train_disp)) {
 		/* Use the plain previous value */
 		pr_debug("%llu sport: %u [%s] use_plain previous_ack_train_disp %lli us, ack_train_disp %lli us\n",
-			NOW, SPORT(sk), __func__, ktime_to_us(ca->previous_ack_t_disp), ktime_to_us(ack_train_disp));
+			NOW, SPORT(sk), __func__,
+			ktime_to_us(ca->previous_ack_t_disp),
+			ktime_to_us(ack_train_disp));
 		return ca->previous_ack_t_disp;
 	} else {
 		/* We have a real sample! */
@@ -476,7 +468,8 @@ static ktime_t calculate_ack_train_disp(struct sock *sk,
 	}
 #endif
 	pr_debug("%llu sport: %u [%s] previous_ack_train_disp %lli us, final_ack_train_disp %lli us\n",
-		NOW, SPORT(sk), __func__, ktime_to_us(ca->previous_ack_t_disp), ktime_to_us(ack_train_disp));
+		NOW, SPORT(sk), __func__, ktime_to_us(ca->previous_ack_t_disp),
+		ktime_to_us(ack_train_disp));
 
 	return ack_train_disp;
 }
@@ -509,8 +502,7 @@ static u32 calculate_avg_rtt(struct sock *sk)
 	 */
 	if (ca->avg_rtt == 0) {
 		pr_debug("%llu sport: %u [%s] returning min_rtt %u\n",
-			 NOW, SPORT(sk), __func__,
-			 ca->min_rtt);
+			 NOW, SPORT(sk), __func__, ca->min_rtt);
 		return ca->min_rtt;
 	} else if (ca->first_rtt > 0) {
 		u32 old_value = ca->avg_rtt;
@@ -525,10 +517,9 @@ static u32 calculate_avg_rtt(struct sock *sk)
 
 
 		pr_debug("%llu sport: %u [%s] previous avg %u us, first_rtt %u us, "
-		    "min %u us, a (shifted) %llu, calculated avg %u us\n",
-		    NOW, SPORT(sk), __func__,
-		    old_value, ca->first_rtt, ca->min_rtt, a,
-		    (u32)left + (u32)right);
+			 "min %u us, a (shifted) %llu, calculated avg %u us\n",
+			 NOW, SPORT(sk), __func__, old_value, ca->first_rtt,
+			 ca->min_rtt, a, (u32)left + (u32)right);
 		return (u32)left + (u32)right;
 	}
 
@@ -558,8 +549,7 @@ static void wavetcp_round_terminated(struct sock *sk, const struct rate_sample *
 	if (ca->stab_factor > 0) {
 		--ca->stab_factor;
 		pr_debug("%llu sport: %u [%s] reached burst %u, not applying (stab left: %u)\n",
-		    NOW, SPORT(sk), __func__, burst,
-		    ca->stab_factor);
+			 NOW, SPORT(sk), __func__, burst, ca->stab_factor);
 		return;
 	}
 
@@ -567,8 +557,8 @@ static void wavetcp_round_terminated(struct sock *sk, const struct rate_sample *
 	ack_train_disp = calculate_ack_train_disp(sk, rs, burst, delta_rtt_us);
 
 	pr_debug("%llu sport: %u [%s] reached burst %u, drtt %llu, atd %lli\n",
-	    NOW, SPORT(sk), __func__, burst, delta_rtt_us,
-	    ktime_to_us(ack_train_disp));
+		 NOW, SPORT(sk), __func__, burst, delta_rtt_us,
+		 ktime_to_us(ack_train_disp));
 
 	/* delta_rtt_us is in us, beta_ms in ms */
 	if (delta_rtt_us > beta_ms * USEC_PER_MSEC)
@@ -599,7 +589,8 @@ static void wavetcp_begin_round(struct sock *sk, ktime_t *first_ack_time,
 	pr_debug("%llu sport: %u [%s]", NOW, SPORT(sk), __func__);
 	*first_ack_time = *now;
 	*last_ack_time = *now;
-	pr_debug("%llu sport: %u [%s], first %lli\n", NOW, SPORT(sk), __func__, ktime_to_us(*first_ack_time));
+	pr_debug("%llu sport: %u [%s], first %lli\n", NOW, SPORT(sk),
+		 __func__, ktime_to_us(*first_ack_time));
 }
 
 static void wavetcp_rtt_measurements(struct sock *sk, s32 rtt_us,
@@ -623,7 +614,7 @@ static void wavetcp_rtt_measurements(struct sock *sk, s32 rtt_us,
 		if (rtt_us < ca->min_rtt) {
 			ca->min_rtt = rtt_us;
 			pr_debug("%llu sport: %u [%s] min rtt %u\n", NOW,
-			    SPORT(sk), __func__, rtt_us);
+				 SPORT(sk), __func__, rtt_us);
 		}
 
 		/* Check the maximum RTT we have seen */
@@ -682,7 +673,8 @@ static void wavetcp_end_round(struct sock *sk, const struct rate_sample *rs,
 		ca->pkts_acked -= tmp->size;
 
 		/* Delete the burst from the history */
-		pr_debug("%llu sport: %u [%s] deleting burst of %u segments\n", NOW, SPORT(sk), __func__, tmp->size);
+		pr_debug("%llu sport: %u [%s] deleting burst of %u segments\n",
+			 NOW, SPORT(sk), __func__, tmp->size);
 		list_del(pos);
 		kmem_cache_free(ca->cache, tmp);
 
@@ -729,11 +721,11 @@ static void wavetcp_cong_control(struct sock *sk, const struct rate_sample *rs)
 		return;
 
 	pr_debug("%llu sport: %u [%s] prior_delivered %u, delivered %i, interval_us %li, "
-	    "rtt_us %li, losses %i, ack_sack %u, prior_in_flight %u, is_app %i,"
-	    " is_retrans %i\n", NOW, SPORT(sk), __func__,
-	    rs->prior_delivered, rs->delivered, rs->interval_us, rs->rtt_us,
-	    rs->losses, rs->acked_sacked, rs->prior_in_flight,
-	    rs->is_app_limited, rs->is_retrans);
+		 "rtt_us %li, losses %i, ack_sack %u, prior_in_flight %u, is_app %i,"
+		 " is_retrans %i\n", NOW, SPORT(sk), __func__,
+		 rs->prior_delivered, rs->delivered, rs->interval_us,
+		 rs->rtt_us, rs->losses, rs->acked_sacked, rs->prior_in_flight,
+		 rs->is_app_limited, rs->is_retrans);
 
 	pos = ca->history->list.next;
 	tmp = list_entry(pos, struct wavetcp_burst_hist, list);
@@ -746,10 +738,12 @@ static void wavetcp_cong_control(struct sock *sk, const struct rate_sample *rs)
 
 	if (ca->previous_rtt < rs->rtt_us) {
 		 pr_debug("%llu sport: %u [%s] previous < rtt: %u < %li",
-			  NOW, SPORT(sk), __func__, ca->previous_rtt, rs->rtt_us);
+			  NOW, SPORT(sk), __func__, ca->previous_rtt,
+			  rs->rtt_us);
 	} else {
 		 pr_debug("%llu sport: %u [%s] previous >= rtt: %u >= %li",
-			  NOW, SPORT(sk), __func__, ca->previous_rtt, rs->rtt_us);
+			  NOW, SPORT(sk), __func__, ca->previous_rtt,
+			  rs->rtt_us);
 	}
 
 	/* We have three possibilities: beginning, middle, end.
@@ -820,17 +814,16 @@ static void wavetcp_acked(struct sock *sk, const struct ack_sample *sample)
 		 * the ACK we get is not aligned.
 		 */
 		pr_debug("%llu sport: %u [%s] delta_seg %i\n",
-		    NOW, SPORT(sk), __func__,
-		    ca->delta_segments);
+			 NOW, SPORT(sk), __func__, ca->delta_segments);
 
 		ca->delta_segments += sample->pkts_acked - tp->snd_cwnd;
 	}
 
 	pr_debug("%llu sport: %u [%s] pkts_acked %u, rtt_us %i, in_flight %u "
-	    ", cwnd %u, seq ack %u, delta %i\n",
-	    NOW, SPORT(sk), __func__, sample->pkts_acked,
-	    sample->rtt_us, sample->in_flight, tp->snd_cwnd, tp->snd_una,
-	    ca->delta_segments);
+		 ", cwnd %u, seq ack %u, delta %i\n", NOW, SPORT(sk),
+		 __func__, sample->pkts_acked, sample->rtt_us,
+		 sample->in_flight, tp->snd_cwnd, tp->snd_una,
+		 ca->delta_segments);
 
 	/* Brutally set the cwnd in order to not let segment out */
 	tp->snd_cwnd = tcp_packets_in_flight(tp);
@@ -849,13 +842,12 @@ static void wavetcp_timer_expired(struct sock *sk)
 
 	if (!test_flag(ca->flags, FLAG_START) || !test_flag(ca->flags, FLAG_INIT)) {
 		pr_debug("%llu sport: %u [%s] returning because of flags, leaving cwnd %u\n",
-		    NOW, SPORT(sk), __func__, tp->snd_cwnd);
+			 NOW, SPORT(sk), __func__, tp->snd_cwnd);
 		return;
 	}
 
 	pr_debug("%llu sport: %u [%s] starting with delta %u current_burst %u\n",
-	    NOW, SPORT(sk), __func__, ca->delta_segments,
-	    current_burst);
+		 NOW, SPORT(sk), __func__, ca->delta_segments, current_burst);
 
 	if (ca->delta_segments < 0) {
 		/* In the previous round, we sent more than the allowed burst,
@@ -877,19 +869,18 @@ static void wavetcp_timer_expired(struct sock *sk)
 
 			current_burst += diff;
 			pr_debug("%llu sport: %u [%s] adding %u to balance "
-			    "segments sent out of window", NOW,
-			    SPORT(sk), __func__, diff);
+				 "segments sent out of window", NOW,
+				 SPORT(sk), __func__, diff);
 		}
 	}
 
 	ca->delta_segments = current_burst;
 	pr_debug("%llu sport: %u [%s] setting delta_seg %u current burst %u\n",
-	    NOW, SPORT(sk), __func__,
-	    ca->delta_segments, current_burst);
+		 NOW, SPORT(sk), __func__, ca->delta_segments, current_burst);
 
 	if (current_burst < min_burst) {
 		pr_debug("%llu sport: %u [%s] WARNING !! not min_burst",
-		    NOW, SPORT(sk), __func__);
+			 NOW, SPORT(sk), __func__);
 		ca->delta_segments += min_burst - current_burst;
 		current_burst = min_burst;
 	}
@@ -898,16 +889,15 @@ static void wavetcp_timer_expired(struct sock *sk)
 	set_flag(&ca->flags, FLAG_SAVE);
 
 	pr_debug("%llu sport: %u [%s], increased window of %u segments, "
-	    "total %u, delta %i, in_flight %u\n",
-	    NOW, SPORT(sk), __func__, ca->burst,
-	    tp->snd_cwnd, ca->delta_segments, tcp_packets_in_flight(tp));
+		 "total %u, delta %i, in_flight %u\n", NOW, SPORT(sk),
+		 __func__, ca->burst, tp->snd_cwnd, ca->delta_segments,
+		 tcp_packets_in_flight(tp));
 
 	if (tp->snd_cwnd - tcp_packets_in_flight(tp) > current_burst) {
 		pr_debug("%llu sport: %u [%s] WARNING! "
-		    " cwnd %u, in_flight %u, current burst %u\n",
-		    NOW, SPORT(sk), __func__,
-		    tp->snd_cwnd, tcp_packets_in_flight(tp),
-		    current_burst);
+			 " cwnd %u, in_flight %u, current burst %u\n",
+			 NOW, SPORT(sk), __func__, tp->snd_cwnd,
+			 tcp_packets_in_flight(tp), current_burst);
 	}
 }
 
@@ -926,7 +916,7 @@ static u64 wavetcp_get_timer(struct sock *sk)
 	sk->sk_max_pacing_rate = 1;
 
 	pr_debug("%llu sport: %u [%s] returning timer of %llu ns\n",
-	    NOW, SPORT(sk), __func__, timer);
+		 NOW, SPORT(sk), __func__, timer);
 
 	return timer;
 }
@@ -938,7 +928,7 @@ static void wavetcp_segment_sent(struct sock *sk, u32 sent)
 
 	if (!test_flag(ca->flags, FLAG_START)) {
 		pr_debug("%llu sport: %u [%s] !START\n",
-		     NOW, SPORT(sk), __func__);
+			 NOW, SPORT(sk), __func__);
 		return;
 	}
 
@@ -947,14 +937,14 @@ static void wavetcp_segment_sent(struct sock *sk, u32 sent)
 		clear_flag(&ca->flags, FLAG_SAVE);
 	} else {
 		pr_debug("%llu sport: %u [%s] not saving burst, sent %u\n",
-		    NOW, SPORT(sk), __func__, sent);
+			 NOW, SPORT(sk), __func__, sent);
 	}
 
 	if (sent > ca->burst) {
 		pr_debug("%llu sport: %u [%s] WARNING! sent %u, burst %u"
-		    " cwnd %u delta_seg %i\n, TSO very probable",
-		    NOW, SPORT(sk), __func__, sent,
-		    ca->burst, tp->snd_cwnd, ca->delta_segments);
+		    " cwnd %u delta_seg %i\n, TSO very probable", NOW,
+		    SPORT(sk), __func__, sent, ca->burst,
+		    tp->snd_cwnd, ca->delta_segments);
 	}
 
 	ca->delta_segments -= sent;
@@ -971,8 +961,8 @@ static void wavetcp_segment_sent(struct sock *sk, u32 sent)
 		else
 			tp->snd_cwnd = 0;
 		pr_debug("%llu sport: %u [%s] reducing cwnd by %u, value %u\n",
-		    NOW, SPORT(sk), __func__,
-		    ca->burst - sent, tp->snd_cwnd);
+			 NOW, SPORT(sk), __func__,
+			 ca->burst - sent, tp->snd_cwnd);
 	}
 }
 
