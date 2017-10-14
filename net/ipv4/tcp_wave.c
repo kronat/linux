@@ -375,7 +375,6 @@ static ktime_t heuristic_ack_train_disp(struct sock *sk,
 	return ack_train_disp;
 }
 
-
 /* In case that round_burst == current_burst:
  *
  * ack_train_disp = last - first * (rcv_ack/rcv_ack-1)
@@ -428,9 +427,9 @@ static ktime_t calculate_ack_train_disp(struct sock *sk,
 		if (ktime_is_null(ca->previous_ack_t_disp))
 			/* do heuristic without saving anything */
 			return heuristic_ack_train_disp(sk, rs, burst);
-		else
-			/* Returning the previous value */
-			return ca->previous_ack_t_disp;
+
+		/* Returning the previous value */
+		return ca->previous_ack_t_disp;
 	}
 
 	/* If we have a complete burst, the value returned by get_ack_train_disp
@@ -453,15 +452,15 @@ static ktime_t calculate_ack_train_disp(struct sock *sk,
 			 ktime_to_us(ca->previous_ack_t_disp),
 			 ktime_to_us(ack_train_disp));
 		return ca->previous_ack_t_disp;
-	} else {
-		/* We have a real sample! */
-		ca->heuristic_scale = 0;
-		ca->previous_ack_t_disp = ack_train_disp;
 	}
 
+	/* We have a real sample! */
+	ca->heuristic_scale = 0;
+	ca->previous_ack_t_disp = ack_train_disp;
+
 	pr_debug("%llu sport: %u [%s] previous_ack_train_disp %lli us, final_ack_train_disp %lli us\n",
-		NOW, SPORT(sk), __func__, ktime_to_us(ca->previous_ack_t_disp),
-		ktime_to_us(ack_train_disp));
+		 NOW, SPORT(sk), __func__, ktime_to_us(ca->previous_ack_t_disp),
+		 ktime_to_us(ack_train_disp));
 
 	return ack_train_disp;
 }
@@ -678,7 +677,7 @@ static void wavetcp_end_round(struct sock *sk, const struct rate_sample *rs,
 	wavetcp_reset_round(ca);
 
 	/* We have to emulate a beginning of the round in case this RTT is less than
-         * the previous one
+	 * the previous one
 	 */
 	if (rs->rtt_us > 0 && rs->rtt_us < ca->previous_rtt) {
 		pr_debug("%llu sport: %u [%s] Emulating the beginning, set the first_rtt to %u\n",
