@@ -982,11 +982,6 @@ static size_t wavetcp_get_info(struct sock *sk, u32 ext, int *attr,
 	return 0;
 }
 
-static void wavetcp_no_data(struct sock *sk)
-{
-	pr_debug("%llu [%s]\n", NOW, __func__);
-}
-
 static u32 wavetcp_sndbuf_expand(struct sock *sk)
 {
 	return 10;
@@ -1013,7 +1008,6 @@ static struct tcp_congestion_ops wave_cong_tcp __read_mostly = {
 	.sndbuf_expand		= wavetcp_sndbuf_expand,
 	.get_pacing_time	= wavetcp_get_timer,
 	.pacing_timer_expired	= wavetcp_timer_expired,
-	.no_data_to_transmit	= wavetcp_no_data,
 	.get_segs_per_round	= wavetcp_get_segs_per_round,
 	.segments_sent		= wavetcp_segment_sent,
 	.owner			= THIS_MODULE,
