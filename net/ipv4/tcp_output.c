@@ -979,14 +979,22 @@ static void tcp_internal_pacing(struct sock *sk, const struct sk_buff *skb)
 	const struct tcp_congestion_ops *ca_ops = inet_csk(sk)->icsk_ca_ops;
 	u64 len_ns;
 
-	if (!tcp_needs_internal_pacing(sk))
+	if (!tcp_needs_internal_pacing(sk)) {
+		pr_debug("%llu [%s] tcp does not need pacing\n",
+			 NOW, __func__);
 		return;
+	}
 
 	if (ca_ops->get_pacing_time) {
-		if (tcp_pacing_timer_check(sk))
+		if (tcp_pacing_timer_check(sk)) {
+			pr_debug("%llu [%s] tcp timer active, do not ask for pacing_time\n",
+				 NOW, __func__);
 			return;
+		}
 
 		len_ns = ca_ops->get_pacing_time(sk);
+		pr_debug("%llu [%s] asked for pacing_time, len_ns=%llu\n",
+			 NOW, __func__, len_ns);
 	} else {
 		u32 rate = sk->sk_pacing_rate;
 
@@ -998,9 +1006,9 @@ static void tcp_internal_pacing(struct sock *sk, const struct sk_buff *skb)
 		 */
 		len_ns = (u64)skb->len * NSEC_PER_SEC;
 		do_div(len_ns, rate);
+		pr_debug("%llu [%s] default pacing_time, len_ns=%llu\n",
+			 NOW, __func__, len_ns);
 	}
-
-	pr_debug("%llu [%s] len_ns=%llu\n", NOW, __func__, len_ns);
 
 	hrtimer_start(&tcp_sk(sk)->pacing_timer,
 		      ktime_add_ns(ktime_get(), len_ns),
@@ -1141,6 +1149,9 @@ static int tcp_transmit_skb(struct sock *sk, struct sk_buff *skb, int clone_it,
 		tcp_event_data_sent(tp, sk);
 		tp->data_segs_out += tcp_skb_pcount(skb);
 		tcp_internal_pacing(sk, skb);
+	} else {
+		pr_debug ("%llu [%s] skb->len == tcp_header_size, an ACK probably\n",
+			  NOW, __func__);
 	}
 
 	if (after(tcb->end_seq, tp->snd_nxt) || tcb->seq == tcb->end_seq)
@@ -2402,7 +2413,8 @@ repair:
 	}
 
 	if (!tcp_send_head(sk)) {
-		pr_debug("%llu [%s] no skb in queue\n", NOW, __func__);
+		pr_debug("%llu [%s] no skb in queue, sent %u\n",
+			 NOW, __func__, sent_pkts);
 	}
 
 	if (ca_ops->segments_sent && notify)
