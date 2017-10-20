@@ -2164,12 +2164,6 @@ static int tcp_mtu_probe(struct sock *sk)
 	return -1;
 }
 
-static bool tcp_pacing_check(const struct sock *sk)
-{
-	return tcp_needs_internal_pacing(sk) &&
-		tcp_pacing_timer_check(sk);
-}
-
 /* TCP Small Queues :
  * Control number of packets in qdisc/devices to two packets / or ~1 ms.
  * (These limits are doubled for retransmits)
@@ -2989,8 +2983,12 @@ int tcp_retransmit_skb(struct sock *sk, struct sk_buff *skb, int segs)
  */
 void tcp_xmit_retransmit_queue(struct sock *sk)
 {
+	const struct tcp_congestion_ops *ca_ops = inet_csk(sk)->icsk_ca_ops;
 	const struct inet_connection_sock *icsk = inet_csk(sk);
 	struct tcp_sock *tp = tcp_sk(sk);
+	u32 pacing_allowed_segs = 0;
+	u32 sent_pkts = 0;
+	bool notify = false;
 	struct sk_buff *skb;
 	struct sk_buff *hole = NULL;
 	u32 max_segs;
@@ -3005,6 +3003,16 @@ void tcp_xmit_retransmit_queue(struct sock *sk)
 		skb = tcp_write_queue_head(sk);
 	}
 
+	if (!tcp_pacing_timer_check(sk)) {
+		pacing_allowed_segs = 1;
+		if (ca_ops->pacing_timer_expired) {
+			ca_ops->pacing_timer_expired(sk);
+			notify = true;
+		}
+		if (ca_ops->get_segs_per_round)
+			pacing_allowed_segs = ca_ops->get_segs_per_round(sk);
+	}
+
 	max_segs = tcp_tso_segs(sk, tcp_current_mss(sk));
 	tcp_for_write_queue_from(skb, sk) {
 		__u8 sacked;
@@ -3013,7 +3021,8 @@ void tcp_xmit_retransmit_queue(struct sock *sk)
 		if (skb == tcp_send_head(sk))
 			break;
 
-		if (tcp_pacing_check(sk))
+		if (tcp_needs_internal_pacing(sk) &&
+		    sent_pkts >= pacing_allowed_segs)
 			break;
 
 		/* we could do better than to assign each time */
@@ -3062,7 +3071,11 @@ void tcp_xmit_retransmit_queue(struct sock *sk)
 			inet_csk_reset_xmit_timer(sk, ICSK_TIME_RETRANS,
 						  inet_csk(sk)->icsk_rto,
 						  TCP_RTO_MAX);
+		sent_pkts += tcp_skb_pcount(skb);
 	}
+
+	if (ca_ops->segments_sent && notify)
+		ca_ops->segments_sent(sk, sent_pkts);
 }
 
 /* We allow to exceed memory limits for FIN packets to expedite
