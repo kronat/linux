@@ -25,8 +25,8 @@
 #include <linux/module.h>
 
 #define NOW ktime_to_us(ktime_get())
-#define SPORT(sk) inet_sk(sk)->inet_sport
-#define DPORT(sk) inet_sk(sk)->inet_dport
+#define SPORT(sk) ntohs(inet_sk(sk)->inet_sport)
+#define DPORT(sk) ntohs(inet_sk(sk)->inet_dport)
 
 static uint init_burst __read_mostly = 10;
 static uint min_burst __read_mostly = 3;
