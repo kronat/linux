@@ -59,8 +59,8 @@ static inline const char *print_tcp_header_flags(__u8 flags)
 }
 
 #define NOW ktime_to_us(ktime_get())
-#define SPORT(sk) inet_sk(sk)->inet_sport
-#define DPORT(sk) inet_sk(sk)->inet_dport
+#define SPORT(sk) ntohs(inet_sk(sk)->inet_sport)
+#define DPORT(sk) ntohs(inet_sk(sk)->inet_dport)
 
 /* People can turn this off for buggy TCP's found in printers etc. */
 int sysctl_tcp_retrans_collapse __read_mostly = 1;
@@ -1175,8 +1175,8 @@ static int tcp_transmit_skb(struct sock *sk, struct sk_buff *skb, int clone_it,
 
 	err = icsk->icsk_af_ops->queue_xmit(sk, skb, &inet->cork.fl);
 
-	pr_debug("%llu sport: %hu %hu [%s] seq=%u, ack=%u, window=%u, len=%u flags=%s err=%i \n",
-		 NOW, SPORT(sk), ntohs(SPORT(sk)), __func__, ntohl(th->seq), ntohl(th->ack_seq),
+	pr_debug("%llu sport: %hu [%s] seq=%u, ack=%u, window=%u, len=%u flags=%s err=%i \n",
+		 NOW, SPORT(sk),  __func__, ntohl(th->seq), ntohl(th->ack_seq),
 		 ntohs(th->window), skb->len, print_tcp_header_flags(flags), err);
 
 	if (unlikely(err > 0)) {
