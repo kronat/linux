@@ -3011,12 +3011,16 @@ void tcp_xmit_retransmit_queue(struct sock *sk)
 		}
 		if (ca_ops->get_segs_per_round)
 			pacing_allowed_segs = ca_ops->get_segs_per_round(sk);
-	}
+	} else
+		pr_debug("%llu [%s] timer running\n", NOW, __func__);
 
 	max_segs = tcp_tso_segs(sk, tcp_current_mss(sk));
 	tcp_for_write_queue_from(skb, sk) {
 		__u8 sacked;
 		int segs;
+		pr_debug("%llu [%s] allowed=%u sent=%u, inflight=%u, cwnd=%u\n",
+			 NOW, __func__, pacing_allowed_segs, sent_pkts,
+			 tcp_packets_in_flight(tp), tp->snd_cwnd);
 
 		if (skb == tcp_send_head(sk))
 			break;
