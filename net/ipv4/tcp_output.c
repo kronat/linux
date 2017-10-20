@@ -2199,6 +2199,11 @@ static bool tcp_small_queue_check(struct sock *sk, const struct sk_buff *skb,
 	limit = min_t(u32, limit, sysctl_tcp_limit_output_bytes);
 	limit <<= factor;
 
+	pr_debug("%llu sport: %hu [%s] pacing rate: %u B/s, %u KB/s, skb size %u, wmem_alloc %u, factor %u, limit %u",
+		 NOW, SPORT(sk), __func__, sk->sk_pacing_rate,
+		 sk->sk_pacing_rate >> 10, skb->truesize, refcount_read(&sk->sk_wmem_alloc),
+		 factor, limit);
+
 	if (refcount_read(&sk->sk_wmem_alloc) > limit) {
 		/* Always send the 1st or 2nd skb in write queue.
 		 * No need to wait for TX completion to call us back,
