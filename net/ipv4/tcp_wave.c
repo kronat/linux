@@ -121,7 +121,10 @@ static void wavetcp_init(struct sock *sk)
 	struct wavetcp *ca = inet_csk_ca(sk);
 	struct tcp_sock *tp = tcp_sk(sk);
 
-	pr_debug("%llu sport: %hu [%s]\n", NOW, SPORT(sk), __func__);
+	pr_debug("%llu sport: %hu [%s] max_pacing_rate %u\n",
+		 NOW, SPORT(sk), __func__, sk->sk_max_pacing_rate);
+
+	sk->sk_pacing_rate = sk->sk_max_pacing_rate;
 
 	/* Setting the initial Cwnd to 0 will not call the TX_START event */
 	tp->snd_ssthresh = 0;
@@ -616,6 +619,21 @@ static void wavetcp_rtt_measurements(struct sock *sk, s32 rtt_us,
 	}
 }
 
+static u32 wavetcp_get_rate(struct sock *sk)
+{
+	const struct wavetcp *ca = inet_csk_ca(sk);
+	u32 rate;
+
+	rate = ca->burst * tcp_mss_to_mtu(sk, tcp_sk(sk)->mss_cache);
+	rate *= USEC_PER_SEC / ca->tx_timer;
+
+	pr_debug("%llu sport: %hu [%s] burst 10, mss %u, timer %u us, rate %u",
+		 NOW, SPORT(sk), __func__, tcp_mss_to_mtu(sk, tcp_sk(sk)->mss_cache),
+		 ca->tx_timer, rate);
+
+	return rate;
+}
+
 static void wavetcp_end_round(struct sock *sk, const struct rate_sample *rs,
 			      const ktime_t *now)
 {
@@ -653,6 +671,7 @@ static void wavetcp_end_round(struct sock *sk, const struct rate_sample *rs,
 
 	if (tmp->size > min_burst) {
 		wavetcp_round_terminated(sk, rs, tmp->size);
+		sk->sk_pacing_rate = wavetcp_get_rate(sk);
 	} else {
 		pr_debug("%llu sport: %hu [%s] skipping burst of %u segments\n",
 			 NOW, SPORT(sk), __func__, tmp->size);
@@ -905,9 +924,6 @@ static u64 wavetcp_get_timer(struct sock *sk)
 	timer = min_t(u64,
 		      ca->tx_timer * NSEC_PER_USEC,
 		      init_timer_ms * NSEC_PER_MSEC);
-
-	/* Very low pacing rate. Ideally, we don't need pacing. */
-	sk->sk_max_pacing_rate = 1;
 
 	pr_debug("%llu sport: %hu [%s] returning timer of %llu ns\n",
 		 NOW, SPORT(sk), __func__, timer);
