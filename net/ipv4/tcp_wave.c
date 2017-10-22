@@ -125,6 +125,7 @@ static void wavetcp_init(struct sock *sk)
 		 NOW, SPORT(sk), __func__, sk->sk_max_pacing_rate);
 
 	sk->sk_pacing_rate = sk->sk_max_pacing_rate;
+	set_bit(TSQ_DISABLED, &sk->sk_tsq_flags);
 
 	/* Setting the initial Cwnd to 0 will not call the TX_START event */
 	tp->snd_ssthresh = 0;
