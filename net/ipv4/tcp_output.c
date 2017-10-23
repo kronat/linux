@@ -983,8 +983,8 @@ static void tcp_internal_pacing(struct sock *sk, const struct sk_buff *skb)
 	u64 len_ns;
 
 	if (!tcp_needs_internal_pacing(sk)) {
-		pr_debug("%llu sport: %hu [%s] tcp does not need pacing\n",
-			 NOW, SPORT(sk), __func__);
+		pr_debug("%llu sport: %hu [%s] tcp does not need pacing, value %u\n",
+			 NOW, SPORT(sk), __func__, sk->sk_pacing_status);
 		return;
 	}
 
