@@ -121,11 +121,13 @@ static void wavetcp_init(struct sock *sk)
 	struct wavetcp *ca = inet_csk_ca(sk);
 	struct tcp_sock *tp = tcp_sk(sk);
 
-	pr_debug("%llu sport: %hu [%s] max_pacing_rate %u\n",
-		 NOW, SPORT(sk), __func__, sk->sk_max_pacing_rate);
-
+	sk->sk_pacing_status = SK_PACING_NEEDED;
 	sk->sk_pacing_rate = sk->sk_max_pacing_rate;
 	set_bit(TSQ_DISABLED, &sk->sk_tsq_flags);
+
+	pr_debug("%llu sport: %hu [%s] max_pacing_rate %u, status %u (1==NEEDED)\n",
+		 NOW, SPORT(sk), __func__, sk->sk_pacing_rate,
+		 sk->sk_pacing_status);
 
 	/* Setting the initial Cwnd to 0 will not call the TX_START event */
 	tp->snd_ssthresh = 0;
@@ -158,8 +160,6 @@ static void wavetcp_init(struct sock *sk)
 
 	/* Init our cache pool for the bwnd history */
 	ca->cache = KMEM_CACHE(wavetcp_burst_hist, 0);
-
-	cmpxchg(&sk->sk_pacing_status, SK_PACING_NONE, SK_PACING_NEEDED);
 }
 
 static void wavetcp_release(struct sock *sk)
