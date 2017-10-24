@@ -308,7 +308,7 @@ static u64 wavetcp_compute_weight(u32 first_rtt, u32 min_rtt)
 
 	diff = diff * AVG_UNIT;
 
-	return diff / first_rtt;
+	return div64_u64(diff, first_rtt);
 }
 
 static ktime_t heuristic_ack_train_disp(struct sock *sk,
@@ -407,7 +407,7 @@ static ktime_t get_ack_train_disp(const ktime_t *last_ack_time,
 	} else {
 		right = current_burst;
 		left *= AVG_UNIT;
-		left = left / round_burst;
+		do_div(left, round_burst);
 		pr_debug("%llu [%s] last %lli us, first %lli us, small_round_burst %u\n",
 			 NOW, __func__, ktime_to_us(*last_ack_time),
 			 ktime_to_us(*first_ack_time), round_burst);
