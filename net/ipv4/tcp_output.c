@@ -2326,7 +2326,7 @@ static bool tcp_write_xmit(struct sock *sk, unsigned int mss_now, int nonagle,
 		if (ca_ops->get_segs_per_round)
 			pacing_allowed_segs = ca_ops->get_segs_per_round(sk);
 	} else
-		pr_debug("%llu sport: %hu [%s] timer running or pacing not needed, pacing_status %u\n",
+		pr_debug("%llu sport: %hu [%s] timer running, pacing_status %u, or no data to send\n",
 			 NOW, SPORT(sk), __func__, sk->sk_pacing_status);
 
 	while ((skb = tcp_send_head(sk))) {
