@@ -2316,7 +2316,8 @@ static bool tcp_write_xmit(struct sock *sk, unsigned int mss_now, int nonagle,
 	tcp_mstamp_refresh(tp);
 
 	if (tcp_needs_internal_pacing(sk) &&
-	    !tcp_pacing_timer_check(sk)) {
+	    !tcp_pacing_timer_check(sk) &&
+	    tcp_send_head(sk)) {
 		pacing_allowed_segs = 1;
 		if (ca_ops->pacing_timer_expired) {
 			ca_ops->pacing_timer_expired(sk);
