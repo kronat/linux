@@ -636,21 +636,11 @@ static u32 wavetcp_get_rate(struct sock *sk)
 }
 
 static void wavetcp_end_round(struct sock *sk, const struct rate_sample *rs,
-			      const ktime_t *now)
+			      const ktime_t *now, u32 burst_size)
 {
 	struct wavetcp *ca = inet_csk_ca(sk);
-	struct wavetcp_burst_hist *tmp;
-	struct list_head *pos;
 
 	pr_debug("%llu [%s]", NOW, __func__);
-	pos = ca->history->list.next;
-	tmp = list_entry(pos, struct wavetcp_burst_hist, list);
-
-	if (!tmp || ca->pkts_acked < tmp->size) {
-		pr_debug("%llu sport: %hu [%s] WARNING: Something wrong\n",
-			 NOW, SPORT(sk), __func__);
-		return;
-	}
 
 	/* The position we are is end_round, but if the following is false,
 	 * in reality we are at the beginning of the next round,
@@ -670,27 +660,12 @@ static void wavetcp_end_round(struct sock *sk, const struct rate_sample *rs,
 		    NOW, SPORT(sk), __func__, ca->first_rtt);
 	}
 
-	if (tmp->size > min_burst) {
-		wavetcp_round_terminated(sk, rs, tmp->size);
+	if (burst_size > min_burst) {
+		wavetcp_round_terminated(sk, rs, burst_size);
 		sk->sk_pacing_rate = wavetcp_get_rate(sk);
 	} else {
 		pr_debug("%llu sport: %hu [%s] skipping burst of %u segments\n",
-			 NOW, SPORT(sk), __func__, tmp->size);
-	}
-
-	/* Consume the burst history if it's a cumulative ACK for many bursts */
-	while (tmp && ca->pkts_acked >= tmp->size) {
-		ca->pkts_acked -= tmp->size;
-
-		/* Delete the burst from the history */
-		pr_debug("%llu sport: %hu [%s] deleting burst of %u segments\n",
-			 NOW, SPORT(sk), __func__, tmp->size);
-		list_del(pos);
-		kmem_cache_free(ca->cache, tmp);
-
-		/* Take next burst */
-		pos = ca->history->list.next;
-		tmp = list_entry(pos, struct wavetcp_burst_hist, list);
+			 NOW, SPORT(sk), __func__, burst_size);
 	}
 
 	wavetcp_reset_round(ca);
@@ -802,7 +777,21 @@ static void wavetcp_cong_control(struct sock *sk, const struct rate_sample *rs)
 		 */
 		wavetcp_rtt_measurements(sk, rs->rtt_us, rs->interval_us);
 	} else {
-		wavetcp_end_round(sk, rs, &now);
+		wavetcp_end_round(sk, rs, &now, tmp->size);
+		/* Consume the burst history if it's a cumulative ACK for many bursts */
+		while (tmp && ca->pkts_acked >= tmp->size) {
+			ca->pkts_acked -= tmp->size;
+
+			/* Delete the burst from the history */
+			pr_debug("%llu sport: %hu [%s] deleting burst of %u segments\n",
+				 NOW, SPORT(sk), __func__, tmp->size);
+			list_del(pos);
+			kmem_cache_free(ca->cache, tmp);
+
+			/* Take next burst */
+			pos = ca->history->list.next;
+			tmp = list_entry(pos, struct wavetcp_burst_hist, list);
+		}
 	}
 }
 
