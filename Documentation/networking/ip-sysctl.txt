@@ -721,6 +721,7 @@ tcp_limit_output_bytes - INTEGER
 	typical pfifo_fast qdiscs.
 	tcp_limit_output_bytes limits the number of bytes on qdisc
 	or device to reduce artificial RTT/cwnd and reduce bufferbloat.
+	Set to -1 to disable.
 	Default: 262144
 
 tcp_challenge_ack_limit - INTEGER
