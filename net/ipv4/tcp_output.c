@@ -2201,7 +2201,10 @@ static bool tcp_small_queue_check(struct sock *sk, const struct sk_buff *skb,
 	if (sock_net(sk)->ipv4.sysctl_tcp_limit_output_bytes < 0)
 		return false;
 
-	limit = max(2 * skb->truesize, sk->sk_pacing_rate >> 10);
+	limit = sock_net(sk)->ipv4.sysctl_tcp_limit_output_ms *
+		(sk->sk_pacing_rate >> 10);
+	limit = max(sock_net(sk)->ipv4.sysctl_tcp_limit_output_pkt * skb->truesize,
+		    limit);
 	limit = min_t(u32, limit,
 		      sock_net(sk)->ipv4.sysctl_tcp_limit_output_bytes);
 	limit <<= factor;

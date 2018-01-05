@@ -1095,6 +1095,20 @@ static struct ctl_table ipv4_net_table[] = {
 		.proc_handler	= proc_dointvec
 	},
 	{
+		.procname	= "tcp_limit_output_ms",
+		.data		= &init_net.ipv4.sysctl_tcp_limit_output_ms,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0644,
+		.proc_handler	= proc_douintvec
+	},
+	{
+		.procname	= "tcp_limit_output_pkt",
+		.data		= &init_net.ipv4.sysctl_tcp_limit_output_pkt,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0644,
+		.proc_handler	= proc_douintvec
+	},
+	{
 		.procname	= "tcp_challenge_ack_limit",
 		.data		= &init_net.ipv4.sysctl_tcp_challenge_ack_limit,
 		.maxlen		= sizeof(int),
